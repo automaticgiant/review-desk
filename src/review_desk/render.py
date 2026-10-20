@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import re
+from pathlib import Path
 from xml.etree.ElementTree import Element
 
 import markdown
@@ -59,6 +60,16 @@ def md_inline(text: str) -> str:
 e = html.escape
 
 
+def display_path(path) -> str:
+    """A path for display: under the home directory it starts with "~", so a
+    screenshot or screen share doesn't show the username."""
+    p = Path(path)
+    try:
+        return "~/" + str(p.relative_to(Path.home()))
+    except ValueError:
+        return str(p)
+
+
 def _links(links: list[Link]) -> str:
     return ", ".join(f'<a href="{e(l.url)}" rel="noopener noreferrer" target="_blank">{e(l.label)}</a>' for l in links)
 
@@ -89,7 +100,7 @@ def index_page(rows: list[dict]) -> str:
         lis = []
         for r in rows:
             if r.get("error"):
-                lis.append(f'<li class="packet broken"><div class="ptitle">{e(r["path"])}</div>'
+                lis.append(f'<li class="packet broken"><div class="ptitle">{e(display_path(r["path"]))}</div>'
                            f'<p class="perror">{e(r["error"])}</p></li>')
                 continue
             c = r["counts"]
@@ -98,7 +109,7 @@ def index_page(rows: list[dict]) -> str:
             lis.append(f'''<li class="packet{' done' if c['pending'] == 0 else ''}">
   <a class="ptitle" href="/p/{e(r["id"])}/">{e(r["title"])}</a>
   <div class="pcounts"><strong>{c["total"]} items</strong> {pills}</div>
-  <p class="pmeta"><code>{e(r["path"])}</code> · last touched <time data-iso="{touched}">{touched}</time></p>
+  <p class="pmeta"><code>{e(display_path(r["path"]))}</code> · last touched <time data-iso="{touched}">{touched}</time></p>
 </li>''')
         listing = '<ul class="packets">' + "\n".join(lis) + "</ul>"
     else:
@@ -138,7 +149,7 @@ def _card(n: int, item: Item, draft_html: str, pid: str) -> str:
     <button type="button" data-decision="drop">Drop</button>
     <button type="button" data-decision="" class="clear">Clear</button>
   </div>
-  <label class="note-label" for="{sid}-note">Notes for Claude</label>
+  <label class="note-label" for="{sid}-note">Notes for the agent</label>
   <textarea id="{sid}-note" data-note rows="2" placeholder="What to change, who to ask, anything else"></textarea>
   <p class="saved" data-saved aria-live="polite"></p>
   <details class="draft"><summary>Read the draft</summary><div class="draft-body">{draft_html}</div></details>
@@ -178,7 +189,7 @@ def packet_page(pid: str, packet: Packet) -> str:
 <main class="wrap">
   <h1>{e(packet.title)}</h1>
   <section class="intro">{md(packet.intro)}{links}
-    <p>Decisions and notes save to <code>{e(str(packet.dir))}/review-decisions.json</code> as you go.</p>
+    <p>Decisions and notes save to <code>{e(display_path(packet.dir / "review-decisions.json"))}</code> as you go.</p>
   </section>
   {cards}
   <section class="evidence">{md(packet.appendix) if packet.appendix else ""}</section>

@@ -36,6 +36,22 @@ def test_packet_page_has_a_disconnected_banner(desk):
     assert b'role="alert"' in body.split(b'id="offline"', 1)[0][-120:]
 
 
+def test_paths_under_home_show_as_tilde(desk, monkeypatch):
+    """Screenshots and screen shares shouldn't reveal a username."""
+    home = desk.packet.parent
+    monkeypatch.setenv("HOME", str(home))
+    expected = f"~/{desk.packet.name}".encode()
+    for path in ("/", f"/p/{desk.pid}/"):
+        body = desk.get(path)[2]
+        assert expected in body, path
+        assert str(home).encode() not in body, path
+
+
+def test_notes_label_names_no_particular_agent(desk):
+    body = desk.get(f"/p/{desk.pid}/")[2]
+    assert b"Notes for the agent" in body and b"Claude" not in body
+
+
 def test_page_is_live(desk):
     (desk.packet / "first-draft.md").write_text("edited text after registration")
     assert b"edited text after registration" in desk.get(f"/p/{desk.pid}/")[2]
