@@ -3,6 +3,8 @@ name = "review-desk"
 version = "0.1.0"
 description = "Local async approval desk for agent drafts: review packets in a browser, decisions on disk"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = ["markdown>=3.5,<4"]
 
 [project.scripts]

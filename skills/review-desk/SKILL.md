@@ -18,7 +18,7 @@ can happen later.
 Needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or later.
 
 ```sh
-git clone <review-desk repo URL> review-desk
+git clone https://github.com/ddl-h-morgan/review-desk.git review-desk
 cd review-desk && uv sync
 ln -s "$PWD/bin/review-desk" ~/.local/bin/review-desk     # or: alias review-desk="$PWD/bin/review-desk"
 ```

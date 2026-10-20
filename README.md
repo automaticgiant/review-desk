@@ -28,7 +28,7 @@ Nothing leaves the machine. The server binds 127.0.0.1 only, and the one runtime
 Needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or later.
 
 ```sh
-git clone <this repo> review-desk
+git clone https://github.com/ddl-h-morgan/review-desk.git review-desk
 cd review-desk && uv sync
 ln -s "$PWD/bin/review-desk" ~/.local/bin/review-desk   # or: alias review-desk="$PWD/bin/review-desk"
 ```
@@ -209,3 +209,7 @@ Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.revi
 `uv run --offline pytest -q` runs the tests; `bin/mutation-check` breaks each security and merge rule in turn and
 checks the suite catches it. `CLAUDE.md` has the working notes. `docs/screenshots/make.py` regenerates the screenshots
 from dummy packets on a scratch desk (port 8794); see its header for how to run it.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
