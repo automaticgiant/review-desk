@@ -12,6 +12,15 @@ chat that jumps between topics is lossy. The desk takes the review out of the co
 
 The review lifecycle is decoupled from the rest of the conversation.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/packet-dark.png">
+  <img src="docs/screenshots/packet-light.png" width="720"
+       alt="A packet page: a tally bar (1 approved, 1 to revise, 1 dropped, 2 not reviewed) above cards for each draft, each with Approve, Revise, Drop and Clear buttons and a notes box; one card is approved, one marked revise with a note, one pending, one dropped.">
+</picture>
+
+*A packet page, in your system's light or dark theme ([light](docs/screenshots/packet-light.png),
+[dark](docs/screenshots/packet-dark.png)). The bar keeps the tally; each card holds one decision and its note.*
+
 Nothing leaves the machine. The server binds 127.0.0.1 only, and the one runtime dependency is `markdown`.
 
 ## Install
@@ -40,6 +49,19 @@ The desk serves every registered packet from one process, on port **8791** by de
 The index at <http://127.0.0.1:8791/> lists packets with approve, revise, drop and pending counts, and when each was last
 touched. Each packet page is rendered from its manifest and draft files on every request, so an edited draft shows on reload
 with no rebuild.
+
+<img src="docs/screenshots/index.png" width="720"
+     alt="The desk's index page listing three packets, Release 2.4 follow-ups, Docs cleanup and Onboarding guide edits, each with approve, revise, drop and pending counts, its path, and when it was last touched.">
+
+*The index: every registered packet, with its counts.*
+
+The page checks the desk every few seconds. If the desk stops, a red banner says nothing is being saved and the controls
+are disabled until it's back, so no click looks saved that wasn't.
+
+<img src="docs/screenshots/offline.png" width="720"
+     alt="A packet page with a red banner reading 'Not connected to the review desk: not saving', the status 'Not connected' in the bar, and the card's buttons and notes box greyed out.">
+
+*The desk stopped while the page was open.*
 
 ## Browser
 
@@ -97,6 +119,12 @@ links = ["https://example.com", {label = "PR #1", url = "https://github.com/o/r/
 [items.facts]                           # optional extra rows on the card: label = inline markdown
 Overlaps = "[issue 1](https://example.com/issues/1)"
 ```
+
+Each item becomes a card. The card shows the recommendation, facts and links; **Read the draft** expands the item's
+file, rendered as markdown:
+
+<img src="docs/screenshots/draft-expanded.png" width="600"
+     alt="One card, approved, with its draft expanded: a heading, a short proposal as a bulleted list, a code block, and numbered acceptance criteria.">
 
 **Decisions** live beside the manifest in `review-decisions.json`:
 
@@ -179,4 +207,5 @@ Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.revi
 ## Development
 
 `uv run --offline pytest -q` runs the tests; `bin/mutation-check` breaks each security and merge rule in turn and
-checks the suite catches it. `CLAUDE.md` has the working notes.
+checks the suite catches it. `CLAUDE.md` has the working notes. `docs/screenshots/make.py` regenerates the screenshots
+from dummy packets on a scratch desk (port 8794); see its header for how to run it.
