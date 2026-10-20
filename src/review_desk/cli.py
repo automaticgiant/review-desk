@@ -1,0 +1,220 @@
+"""review-desk CLI. Every command is non-interactive so agents can drive it; exit 0 on success, 1 on error."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+from pathlib import Path
+
+from .decisions import DecisionsError
+from .manifest import MANIFEST, SCAFFOLD, ManifestError
+from .registry import Registry, RegistryError, state_dir
+from .summary import summarize_dir, summarize_entry, text_report
+
+DEFAULT_PORT = 8791
+PLATFORM = sys.platform  # module attribute so tests can pick a platform
+
+
+def default_port() -> int:
+    return int(os.environ.get("REVIEW_DESK_PORT") or DEFAULT_PORT)
+
+
+def base_url(port: int) -> str:
+    return f"http://127.0.0.1:{port}/"
+
+
+class CliError(Exception):
+    pass
+
+
+# ---- desk process ---------------------------------------------------------------------------------
+
+def probe(port: int) -> str:
+    """'desk' if a review-desk answers on the port, 'other' if something else does, 'none' if nothing listens."""
+    req = urllib.request.Request(base_url(port) + "api/health", headers={"Host": f"127.0.0.1:{port}"})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=2) as r:
+            return "desk" if json.loads(r.read()).get("app") == "review-desk" else "other"
+    except urllib.error.HTTPError:
+        return "other"
+    except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError):
+        return "none"
+
+
+def ensure_running(port: int) -> None:
+    """Start `review-desk serve` detached if nothing answers on the port; log to $REVIEW_DESK_STATE/desk-<port>.log."""
+    state = probe(port)
+    if state == "desk":
+        return
+    if state == "other":
+        raise CliError(f"port {port} is in use by something that isn't review-desk; pick another with --port")
+    sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    log = open(sd / f"desk-{port}.log", "ab")
+    subprocess.Popen([sys.executable, "-m", "review_desk", "serve", "--port", str(port)],
+                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
+    for _ in range(50):
+        time.sleep(0.1)
+        if probe(port) == "desk":
+            print(f"started the desk on {base_url(port)} (log: {sd / f'desk-{port}.log'})", file=sys.stderr)
+            return
+    raise CliError(f"desk didn't come up on port {port}; see {sd / f'desk-{port}.log'}")
+
+
+def open_browser(url: str, browser: str | None) -> None:
+    """Show `url` in a browser. A named browser opens a new window of that app on macOS
+    (`open -na NAME --args --new-window URL`) and is looked up with `webbrowser.get(NAME)` elsewhere.
+    Unnamed: `open URL` on macOS (the default browser), `webbrowser` elsewhere."""
+    if PLATFORM == "darwin":
+        cmd = ["open", "-na", browser, "--args", "--new-window", url] if browser else ["open", url]
+        subprocess.run(cmd, check=True)
+        return
+    try:
+        ok = (webbrowser.get(browser) if browser else webbrowser).open(url, new=1)
+    except webbrowser.Error as e:
+        raise CliError(f"can't start browser {browser!r}: {e}") from None
+    if not ok:
+        print(f"review-desk: couldn't open a browser; open {url} yourself", file=sys.stderr)
+
+
+# ---- commands -------------------------------------------------------------------------------------
+
+def cmd_add(a, reg: Registry):
+    e = reg.add(a.dir)
+    print(f"registered {e.id}  {e.path}")
+    print(f"open: review-desk open {e.path}   (page: {base_url(a.port)}p/{e.id}/)")
+
+
+def cmd_remove(a, reg: Registry):
+    if not reg.remove(a.dir):
+        raise CliError(f"not registered: {Path(a.dir).expanduser().resolve()}")
+    print(f"unregistered {Path(a.dir).expanduser().resolve()} (files untouched)")
+
+
+def cmd_list(a, reg: Registry):
+    rows = [summarize_entry(e) for e in reg.entries()]
+    if a.json:
+        print(json.dumps({"packets": rows}, indent=1))
+        return
+    if not rows:
+        print("no packets registered")
+    for r in rows:
+        if "error" in r:
+            print(f"{r['id']}  ERROR {r['error']}\n    {r['path']}")
+            continue
+        c = r["counts"]
+        print(f"{r['id']}  {r['title']}\n    {c['total']} items: {c['approve']} approve, {c['revise']} revise, "
+              f"{c['drop']} drop, {c['pending']} pending; last touched {r['lastTouched'] or 'never'}\n    {r['path']}")
+
+
+def cmd_status(a, reg: Registry):
+    if a.dir is None:
+        rows = [summarize_entry(e) for e in reg.entries()]
+        waiting = sum(1 for r in rows if "error" not in r and r["counts"]["pending"])
+        if a.json:
+            print(json.dumps({"packets": rows, "packetsWithPending": waiting}, indent=1))
+        else:
+            for r in rows:
+                if "error" in r:
+                    print(f"ERROR    {r['id']}  {r['error']}")
+                else:
+                    print(f"{r['counts']['pending']:>3} pending  {r['id']}  {r['title']}")
+            print(f"{waiting} packet(s) with pending items")
+        return
+    s = summarize_dir(a.dir)
+    e = reg.find(a.dir)
+    s["id"] = e.id if e else None
+    s["url"] = f"{base_url(a.port)}p/{e.id}/" if e else None
+    print(json.dumps(s, indent=1) if a.json else text_report(s))
+
+
+def cmd_new(a, reg: Registry):
+    d = Path(a.dir).expanduser().resolve()
+    mf = d / MANIFEST
+    if mf.exists():
+        raise CliError(f"{mf} already exists; not overwriting")
+    d.mkdir(parents=True, exist_ok=True)
+    mf.write_text(SCAFFOLD.format(title=json.dumps(a.title or d.name)))
+    ex = d / "example-draft.md"
+    if not ex.exists():
+        ex.write_text("# Example draft\n\nReplace this file, or point the item's `file` at your draft.\n")
+    print(f"wrote {mf}\nedit it, then: review-desk add {d}")
+
+
+def cmd_serve(a, reg: Registry):
+    from .server import make_server
+    if a.background:
+        ensure_running(a.port)
+        print(base_url(a.port))
+        return
+    if probe(a.port) != "none":
+        raise CliError(f"port {a.port} is already in use")
+    srv = make_server(a.port, reg)
+    print(f"review-desk serving {base_url(a.port)} (registry: {reg.file})", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+
+
+def cmd_open(a, reg: Registry):
+    url = base_url(a.port)
+    if a.dir:
+        e = reg.find(a.dir)
+        if e is None:
+            e = reg.add(a.dir)
+            print(f"registered {e.id}  {e.path}", file=sys.stderr)
+        url += f"p/{e.id}/"
+    if not a.no_browser:
+        ensure_running(a.port)
+        open_browser(url, a.browser or os.environ.get("REVIEW_DESK_BROWSER") or None)
+    print(url)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="review-desk", description="Local approval desk for agent drafts.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def port_arg(sp):
+        sp.add_argument("--port", type=int, default=default_port(), help=f"desk port (default {DEFAULT_PORT}, or $REVIEW_DESK_PORT)")
+
+    s = sub.add_parser("add", help="register a packet directory (must hold a valid review.toml)")
+    s.add_argument("dir"); port_arg(s); s.set_defaults(fn=cmd_add)
+    s = sub.add_parser("remove", help="unregister a packet (its files are untouched)")
+    s.add_argument("dir"); s.set_defaults(fn=cmd_remove)
+    s = sub.add_parser("list", help="registered packets with decision counts")
+    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_list)
+    s = sub.add_parser("status", help="decisions and notes for one packet (or a summary of all registered ones)")
+    s.add_argument("dir", nargs="?"); s.add_argument("--json", action="store_true"); port_arg(s); s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("new", help="scaffold a review.toml in a directory")
+    s.add_argument("dir"); s.add_argument("--title"); s.set_defaults(fn=cmd_new)
+    s = sub.add_parser("serve", help="run the desk (127.0.0.1 only); foreground unless --background")
+    port_arg(s)
+    s.add_argument("--background", action="store_true", help="start detached if not already running, print the URL, exit")
+    s.set_defaults(fn=cmd_serve)
+    s = sub.add_parser("open", help="open the desk or a packet in a browser; starts the desk if needed; "
+                                    "registers the packet if it isn't yet")
+    s.add_argument("dir", nargs="?"); port_arg(s)
+    s.add_argument("--browser", metavar="NAME", help="browser to use (default $REVIEW_DESK_BROWSER, else the system "
+                                                     "default); on macOS an app name, opened in a new window")
+    s.add_argument("--no-browser", action="store_true", help="only print the URL (don't start the desk or a browser)")
+    s.set_defaults(fn=cmd_open)
+    return p
+
+
+def main(argv=None) -> int:
+    a = build_parser().parse_args(argv)
+    try:
+        a.fn(a, Registry.default())
+        return 0
+    except (CliError, RegistryError, ManifestError, DecisionsError, subprocess.CalledProcessError) as e:
+        print(f"review-desk: {e}", file=sys.stderr)
+        return 1

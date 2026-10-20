@@ -1,0 +1,14 @@
+#!/bin/sh
+# Run the review-desk CLI from this checkout. State: $REVIEW_DESK_STATE (default ~/.local/state/review-desk).
+# Works when installed as a symlink (e.g. ~/.local/bin/review-desk): follow the links to the real file first,
+# and run the module rather than a "review-desk" command, which would find this launcher again on PATH.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+TOOLS="$(cd "$(dirname "$SELF")/.." && pwd)"
+exec uv run --offline --quiet --project "$TOOLS" python -m review_desk "$@"
