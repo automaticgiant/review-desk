@@ -7,7 +7,7 @@ itself.
 
 ## Working rules
 
-- Keep it small and local: stdlib plus `markdown`. No network beyond 127.0.0.1, and no coupling to any hosted service.
+- Keep it small and local: stdlib plus `markdown-it-py` (with linkify). No network beyond 127.0.0.1, and no coupling to any hosted service.
 - Don't change the decisions file shape (`{item_id: {decision, note, updatedAt}}`): agents and existing packets rely on it.
 - Don't change `slugify`: packet ids (and so their URLs) derive from it.
 - Every security rule in `server.py`'s docstring has a test. A new rule needs a test, and a mutant in `bin/mutation-check`.
@@ -30,7 +30,7 @@ itself.
 - `registry.py`: `packets.json` under `$REVIEW_DESK_STATE` (default `~/.local/state/review-desk`); packet ids are
   `<last two path parts>-<sha1[:6]>`.
 - `decisions.py`: read, validate and merge one item under a lock; `fsutil.atomic_write_json` does the write.
-- `summary.py`: the `status`/`list`/index summaries. `render.py`: HTML, with raw HTML disabled in markdown and a URL filter.
+- `summary.py`: the `status`/`list`/index summaries. `render.py`: HTML; drafts are GitHub-style markdown (markdown-it-py, CommonMark plus tables, strikethrough, linkify), raw HTML off, URL allowlist on every href and src.
 - `server.py`: routes and security checks. `static/page.{css,js}`: the page (served as files so the CSP can forbid inline script).
 - `cli.py`: commands, and `open_browser`. `bin/review-desk`: launcher. `bin/mutation-check`: the can-it-fail check.
 - `skills/review-desk/`: the Claude Code skill for agents using the desk.

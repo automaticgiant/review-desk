@@ -1,8 +1,10 @@
 """HTML for the index and packet pages. Everything from a manifest or draft is untrusted text:
 
 - plain fields go through html.escape;
-- markdown goes through Python-Markdown with raw HTML disabled (block and inline), so tags render as text;
-- href/src values survive only if they are http(s), mailto, fragment or scheme-less relative URLs.
+- markdown is GitHub-style (CommonMark plus tables, strikethrough and bare-URL links, via markdown-it-py), with raw
+  HTML disabled, so tags render as text;
+- href/src values survive only if they are http(s), mailto, fragment or scheme-less relative URLs (checked on the
+  final, entity-decoded value markdown-it puts in the attribute).
 The server also sends a CSP that allows only its own script and stylesheet, as a second layer.
 """
 from __future__ import annotations
@@ -10,11 +12,9 @@ from __future__ import annotations
 import html
 import re
 from pathlib import Path
-from xml.etree.ElementTree import Element
+from urllib.parse import unquote
 
-import markdown
-from markdown.extensions import Extension
-from markdown.treeprocessors import Treeprocessor
+from markdown_it import MarkdownIt
 
 from .manifest import Item, Link, Packet
 
@@ -23,38 +23,40 @@ _SAFE_SCHEMES = {"http", "https", "mailto"}
 
 
 def safe_url(url: str) -> bool:
-    cleaned = re.sub(r"[\x00-\x20\x7f]+", "", url or "")
+    """True for http(s), mailto, fragment and scheme-less relative URLs. Percent-decoding first and dropping
+    control characters and spaces (which browsers ignore inside a scheme) means "java%09script:" is refused too."""
+    cleaned = re.sub(r"[\x00-\x20\x7f]+", "", unquote(url or ""))
     m = _SCHEME_RE.match(cleaned)
     return m is None or m.group(1).lower() in _SAFE_SCHEMES
 
 
-class _UrlFilter(Treeprocessor):
-    def run(self, root: Element):
-        for el in root.iter():
-            for attr in ("href", "src"):
-                v = el.get(attr)
-                if v is not None and not safe_url(v):
-                    del el.attrib[attr]
-            if el.tag == "a" and el.get("href", "").startswith(("http://", "https://")):
-                el.set("rel", "noopener noreferrer")
-                el.set("target", "_blank")
+def _url_filter(state) -> None:
+    """Core rule, run last: drop any unsafe href/src (the link text or alt stays), and open web links in a new tab."""
+    stack = list(state.tokens)
+    while stack:
+        tok = stack.pop()
+        if tok.children:
+            stack.extend(tok.children)
+        for attr in ("href", "src"):
+            v = tok.attrGet(attr)
+            if v is not None and not safe_url(str(v)):
+                del tok.attrs[attr]
+        if tok.type == "link_open" and str(tok.attrGet("href") or "").startswith(("http://", "https://")):
+            tok.attrSet("rel", "noopener noreferrer")
+            tok.attrSet("target", "_blank")
 
 
-class _NoRawHtml(Extension):
-    def extendMarkdown(self, md):
-        md.preprocessors.deregister("html_block")
-        md.inlinePatterns.deregister("html")
-        md.treeprocessors.register(_UrlFilter(md), "url_filter", 0)
+_MD = MarkdownIt("commonmark", {"html": False, "linkify": True}).enable(["table", "strikethrough", "linkify"])
+_MD.validateLink = lambda url: True  # every URL is checked by _url_filter, which keeps the text of a refused link
+_MD.core.ruler.push("url_filter", _url_filter)
 
 
 def md(text: str) -> str:
-    return markdown.markdown(text or "", extensions=["tables", "fenced_code", "sane_lists", _NoRawHtml()])
+    return _MD.render(text or "")
 
 
 def md_inline(text: str) -> str:
-    h = md(text).strip()
-    m = re.fullmatch(r"<p>(.*)</p>", h, flags=re.S)
-    return m.group(1) if m else h
+    return _MD.renderInline(text or "").strip()
 
 
 e = html.escape
