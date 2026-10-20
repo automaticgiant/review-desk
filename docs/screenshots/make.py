@@ -1,7 +1,7 @@
 """Regenerate the README screenshots from dummy packets.
 
-Builds demo packets under /tmp/review-desk-demo, starts a scratch desk on port 8794 (registry in
-/tmp/review-desk-demo/state, so your own desk and registry are never touched), sets decisions through the desk's
+Builds demo packets under ~/review-desk-demo (the pages show it as ~/..., so no username appears), starts a
+scratch desk on port 8794 (registry in ~/review-desk-demo/state, so your own desk and registry are never touched), sets decisions through the desk's
 API like the page does, captures the PNGs into this directory with Playwright's Chromium, then stops the desk and
 deletes the demo directory.
 
@@ -28,7 +28,8 @@ import urllib.request
 from pathlib import Path
 
 PORT = 8794
-DEMO = Path("/tmp/review-desk-demo")
+DEMO = Path.home() / "review-desk-demo"
+MARKER = ".made-by-review-desk-screenshots"  # only a folder this script made is ever deleted
 OUT = Path(__file__).resolve().parent
 ROOT = OUT.parents[1]
 WIDTH = 1200
@@ -277,12 +278,16 @@ def main() -> int:
     global DESK
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--chromium", help="Chromium binary (default $PLAYWRIGHT_CHROMIUM, else the Playwright cache)")
-    ap.add_argument("--keep", action="store_true", help="keep /tmp/review-desk-demo afterwards")
+    ap.add_argument("--keep", action="store_true", help="keep ~/review-desk-demo afterwards")
     a = ap.parse_args()
     if port_in_use(PORT):
         sys.exit(f"port {PORT} is busy; stop whatever is on it first")
 
+    if DEMO.exists() and not (DEMO / MARKER).exists():
+        sys.exit(f"{DEMO} exists and wasn't made by this script; move it or delete it first")
     shutil.rmtree(DEMO, ignore_errors=True)
+    DEMO.mkdir()
+    (DEMO / MARKER).touch()
     env = {**os.environ, "REVIEW_DESK_STATE": str(DEMO / "state"), "REVIEW_DESK_PORT": str(PORT)}
     pids = {}
     try:
@@ -299,7 +304,7 @@ def main() -> int:
         capture(find_chromium(a.chromium), pids)
     finally:
         stop_desk()
-        if not a.keep:
+        if not a.keep and (DEMO / MARKER).exists():
             shutil.rmtree(DEMO, ignore_errors=True)
     for f in sorted(OUT.glob("*.png")):
         print(f"{f.name}  {f.stat().st_size // 1024} KB")
