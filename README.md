@@ -21,7 +21,7 @@ The review lifecycle is decoupled from the rest of the conversation.
 *A packet page, in your system's light or dark theme ([light](docs/screenshots/packet-light.png),
 [dark](docs/screenshots/packet-dark.png)). The bar keeps the tally; each card holds one decision and its note.*
 
-Nothing leaves the machine. The server binds 127.0.0.1 only, and the one runtime dependency is `markdown`.
+Nothing leaves the machine. The server binds 127.0.0.1 only, and the one runtime dependency is `markdown-it-py`.
 
 ## Install
 
@@ -121,10 +121,13 @@ Overlaps = "[issue 1](https://example.com/issues/1)"
 ```
 
 Each item becomes a card. The card shows the recommendation, facts and links; **Read the draft** expands the item's
-file, rendered as markdown:
+file, rendered as GitHub-flavoured markdown (CommonMark, plus tables, strikethrough and bare-URL links), so a draft
+looks as it will on GitHub: a list can follow a line of text directly, and two-space indents nest. Long code lines
+scroll sideways; tick **Wrap long lines** in the top bar to wrap them instead (a per-browser preference, kept in
+`localStorage`):
 
 <img src="docs/screenshots/draft-expanded.png" width="600"
-     alt="One card, approved, with its draft expanded: a heading, a short proposal as a bulleted list, a code block, and numbered acceptance criteria.">
+     alt="One card, approved, with its draft expanded: a heading, a proposal as a bulleted list with a nested list, a code block whose long line wraps, and numbered acceptance criteria.">
 
 **Decisions** live beside the manifest in `review-decisions.json`:
 
@@ -174,7 +177,7 @@ test in `tests/test_server.py`, and `bin/mutation-check` breaks each rule in tur
   no dots), and item files are served only through the manifest mapping, never by filename. The manifest rejects
   absolute paths, `..`, and symlinks that resolve outside the packet.
 - Request bodies are capped at 64 KiB, notes at 20,000 characters.
-- Untrusted text is escaped: markdown renders with raw HTML disabled, and only http(s), mailto and relative links survive.
+- Untrusted text is escaped: markdown renders with raw HTML disabled, and only http(s), mailto and relative links (and image sources) survive.
   Pages also carry a strict CSP (`default-src 'none'`, script and style from the desk only), `nosniff`, `DENY` framing,
   and `no-referrer`.
 - Writes merge one item at a time under a lock and replace the file atomically (temp file, fsync, rename). A corrupt

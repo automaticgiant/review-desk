@@ -50,13 +50,18 @@ times, and each time someone reran the job by hand.
 
 ## Proposal
 
-- Retry each upload up to **3 times**, with exponential backoff (2 s, 4 s, 8 s).
-- Retry only on `429` and `5xx`; fail fast on anything else.
+Each upload should:
+- Retry up to **3 times**, with exponential backoff (2 s, 4 s, 8 s).
+- Retry only on transient errors; fail fast on anything else:
+  - `429` and `5xx`: retry;
+  - any other `4xx`: fail at once.
 - Log each retry with the attempt number, so flaky days are visible.
 
 ```python
 @retry(on=(TooManyRequests, ServerError), attempts=3, backoff=2.0)
 def upload(chunk): ...
+
+log.warning("upload retry", extra={"job": job.id, "chunk": chunk.index, "attempt": attempt, "status": err.status, "wait_s": delay})
 ```
 
 ## Acceptance criteria
@@ -245,6 +250,8 @@ def capture(chromium: str | None, pids: dict) -> None:
         p = page()
         packet(p)
         p.evaluate("document.querySelector('#export-retry details').open = true")
+        p.check("#wrap-toggle")  # the long log line wraps instead of scrolling
+        p.evaluate("document.activeElement && document.activeElement.blur()")
         # A clip of the full page, not an element shot: that scrolls, and the sticky bar would cover the card.
         box = p.locator("#export-retry").bounding_box()
         pad = 16
