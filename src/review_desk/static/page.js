@@ -9,6 +9,17 @@
   }
   if (document.body.dataset.page !== "packet") return;
 
+  // "Wrap long lines": a per-viewer viewing preference, so it lives in localStorage, not in the desk.
+  // Storage can be unavailable (private window, blocked site data); the toggle then just doesn't persist.
+  const wrapToggle = document.getElementById("wrap-toggle");
+  const WRAP_KEY = "review-desk:wrap-lines";
+  const applyWrap = on => { wrapToggle.checked = on; document.body.classList.toggle("wrap-lines", on); };
+  try { applyWrap(localStorage.getItem(WRAP_KEY) === "1"); } catch { applyWrap(false); }
+  wrapToggle.addEventListener("change", () => {
+    applyWrap(wrapToggle.checked);
+    try { localStorage.setItem(WRAP_KEY, wrapToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
+  });
+
   const pid = document.body.dataset.pid;
   const api = `/api/p/${pid}`;
   const conn = document.getElementById("conn");

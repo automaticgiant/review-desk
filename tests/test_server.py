@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -248,3 +249,18 @@ def test_route_segments_are_strict_slugs(seg):
 
 def test_favicon_is_empty_204(desk):
     assert desk.get("/favicon.ico")[0] == 204
+
+
+def test_packet_page_has_a_wrap_toggle(desk):
+    """A viewing preference: a real checkbox in the bar, off by default; page.js restores and applies it."""
+    body = desk.get(f"/p/{desk.pid}/")[2].decode()
+    bar = body.split('id="bar"', 1)[1].split("</div>", 1)[0]
+    m = re.search(r'<input type="checkbox" id="wrap-toggle"[^>]*>', bar)
+    assert m and "checked" not in m.group(0)
+    assert re.search(r'<label[^>]*for="wrap-toggle"[^>]*>[^<]*Wrap long lines', bar) or \
+        re.search(r"<label[^>]*>\s*<input[^>]*id=\"wrap-toggle\"[^>]*>\s*Wrap long lines", bar)
+    js = desk.get("/static/page.js")[2].decode()
+    assert "wrap-toggle" in js and "localStorage" in js
+    css = desk.get("/static/page.css")[2].decode()
+    assert re.search(r"\.wrap-lines pre[^{]*\{[^}]*white-space:\s*pre-wrap", css)
+    assert "wrap-toggle" not in desk.get("/")[2].decode()  # the index has no drafts to wrap

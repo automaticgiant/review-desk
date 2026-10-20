@@ -186,6 +186,7 @@ def packet_page(pid: str, packet: Packet) -> str:
   <span class="pill revise" id="n-revise">0 to revise</span>
   <span class="pill drop" id="n-drop">0 dropped</span>
   <span class="pill" id="n-open">{n} not reviewed</span>
+  <label class="wrap-toggle"><input type="checkbox" id="wrap-toggle"> Wrap long lines</label>
   <span class="conn" id="conn">Connecting…</span>
 </div>
 <main class="wrap">

@@ -48,7 +48,8 @@ body.is-offline .card { opacity: 0.55; }
 @media (max-width: 520px) { .facts div { grid-template-columns: 1fr; gap: 0; } }
 .decide { display: flex; flex-wrap: wrap; gap: 8px; }
 .decide button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
-.decide button:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.decide button:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible,
+.wrap-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .decide button[aria-pressed="true"][data-decision="approve"] { background: var(--approve); border-color: var(--approve); color: var(--surface); }
 .decide button[aria-pressed="true"][data-decision="revise"] { background: var(--revise); border-color: var(--revise); color: var(--surface); }
 .decide button[aria-pressed="true"][data-decision="drop"] { background: var(--drop); border-color: var(--drop); color: var(--surface); }
@@ -56,6 +57,7 @@ body.is-offline .card { opacity: 0.55; }
 .note-label { font-size: 0.85em; color: var(--muted); }
 textarea { width: 100%; font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); resize: vertical; }
 .saved { margin: 0; font-size: 0.8em; color: var(--muted); min-height: 1.2em; }
+details.draft { min-width: 0; } /* a grid item: without this a wide code line widens the whole page */
 details.draft summary { cursor: pointer; color: var(--accent); }
 .draft-body { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; overflow-x: auto; }
 .draft-body h1 { font-size: 1.15rem; } .draft-body h2 { font-size: 1rem; } .draft-body h3 { font-size: 0.95rem; }
@@ -63,6 +65,10 @@ details.draft summary { cursor: pointer; color: var(--accent); }
 .draft-body td, .draft-body th, .evidence td, .evidence th { border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
 code { font-family: var(--mono); font-size: 0.88em; }
 pre { overflow-x: auto; background: var(--bg); padding: 8px; border-radius: 6px; }
+/* "Wrap long lines" (bar toggle, per viewer): code wraps instead of scrolling sideways; tables still scroll. */
+body.wrap-lines pre, body.wrap-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wrap-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9em; color: var(--muted); cursor: pointer; }
+.wrap-toggle input { margin: 0; width: 1em; height: 1em; accent-color: var(--accent); cursor: pointer; }
 a { color: var(--accent); }
 .evidence { overflow-x: auto; }
 .perror { color: var(--drop); }
