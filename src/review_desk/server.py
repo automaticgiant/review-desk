@@ -6,10 +6,14 @@ Routes (anything else is 404):
   GET /p/<pid>/raw/<item_id>             an item's draft file as text/plain (only files the manifest names)
   GET /api/health                        {"app": "review-desk"}
   GET /api/p/<pid>/state                 the packet's review-decisions.json
+  GET /api/p/<pid>/history               the packet's review-history.json (notes archived when a revision cleared them)
   GET /api/p/<pid>/drafts                {item_id: version} for every item's rendered draft (the page polls this);
-                                         X-Layout-Version says whether the manifest-derived page changed
+                                         X-Layout-Version says whether the manifest-derived page changed; with
+                                         X-Static-Version ("<css>.<js>" fingerprints) lets an open page swap in a
+                                         changed stylesheet or script without reloading (hot swap)
   GET /api/p/<pid>/drafts/<item_id>      {version, html}: one rendered draft, so the page can swap it in place
-  PUT /api/p/<pid>/items/<item_id>       merge {"decision"?, "note"?} into one item
+  PUT /api/p/<pid>/items/<item_id>       merge {"decision"?, "note"?, "ifDecision"?} into one item
+                                         (409 and no change if ifDecision no longer matches the item's decision)
   GET /static/page.css|page.js
 
 Security rules (each has a test in tests/test_server.py):
@@ -24,6 +28,7 @@ Security rules (each has a test in tests/test_server.py):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,6 +52,7 @@ ROUTES_GET = [
     (re.compile(rf"^/p/{SEG}/raw/{SEG}$"), "raw"),
     (re.compile(r"^/api/health$"), "health"),
     (re.compile(rf"^/api/p/{SEG}/state$"), "state"),
+    (re.compile(rf"^/api/p/{SEG}/history$"), "history"),
     (re.compile(rf"^/api/p/{SEG}/drafts$"), "drafts"),
     (re.compile(rf"^/api/p/{SEG}/drafts/{SEG}$"), "draft"),
     (re.compile(r"^/static/(page\.css|page\.js)$"), "static"),
@@ -178,10 +184,17 @@ class Handler(BaseHTTPRequestHandler):
         except dec.DecisionsError as e:
             raise HttpError(500, str(e))
 
+    def _get_history(self, pid):
+        p = self._packet(pid)
+        try:
+            self._json(200, dec.read_history(p.dir))
+        except dec.DecisionsError as e:
+            raise HttpError(500, str(e))
+
     def _get_drafts(self, pid):
         p = self._packet(pid)
-        self._json(200, {it.id: render.draft_version(render.draft_html(p, it)) for it in p.items},
-                   {"X-Layout-Version": render.layout_version(pid, p)})
+        headers = {"X-Layout-Version": render.layout_version(pid, p), "X-Static-Version": static_version()}
+        self._json(200, {it.id: render.draft_version(render.draft_html(p, it)) for it in p.items}, headers)
 
     def _get_draft(self, pid, item_id):
         p = self._packet(pid)
@@ -226,6 +239,8 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, str(e))
         try:
             rec = dec.merge_item(p.dir, item_id, patch)
+        except dec.ConflictError as e:  # an ifDecision guard that no longer holds: the item changed under the caller
+            raise HttpError(409, str(e))
         except dec.DecisionsError as e:  # unreadable decisions file: refuse rather than overwrite
             raise HttpError(500, str(e))
         self._json(200, rec)
@@ -257,6 +272,13 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
         except OSError:
             pass
+
+
+def static_version() -> str:
+    """`<css>.<js>` fingerprints of the page's stylesheet and script, read fresh each time, so an edit shows up on the next poll."""
+    def h(name):
+        return hashlib.sha1(resources.files("review_desk").joinpath("static", name).read_bytes()).hexdigest()[:12]
+    return f"{h('page.css')}.{h('page.js')}"
 
 
 class DeskServer(ThreadingHTTPServer):

@@ -156,9 +156,12 @@ def _card(n: int, item: Item, draft_html_: str, pid: str) -> str:
     <button type="button" data-decision="drop">Drop</button>
     <button type="button" data-decision="" class="clear">Clear</button>
   </div>
-  <label class="note-label" for="{sid}-note">Notes for the agent</label>
-  <textarea id="{sid}-note" data-note rows="2" placeholder="What to change, who to ask, anything else"></textarea>
-  <p class="saved" data-saved aria-live="polite"></p>
+  <div class="note-slot"><div class="note-box">
+    <label class="note-label" for="{sid}-note">Notes for the agent</label>
+    <textarea id="{sid}-note" data-note rows="2" placeholder="What to change, who to ask, anything else"></textarea>
+    <p class="saved" data-saved aria-live="polite"></p>
+  </div></div>
+  <details class="earlier" data-earlier hidden><summary>Earlier notes (<span data-earlier-count>0</span>)</summary><ol data-earlier-list></ol></details>
   <p class="saved" data-draft-updated aria-live="polite"></p>
   <details class="draft"><summary>Read the draft</summary><div class="draft-body">{draft_html_}</div></details>
 </article>'''
@@ -183,7 +186,8 @@ HELP_DIALOG = """<dialog id="help-dialog" class="help" aria-labelledby="help-tit
     <dt>Approve</dt><dd>The draft is good as written. The agent may use it.</dd>
     <dt>Revise</dt><dd>Close, but change it. Say what in <em>Notes for the agent</em>. The agent edits the draft file and
       tells you which items changed. The new text appears here on its own within a few seconds, without disturbing
-      your notes or the drafts you have open. The item stays on Revise until you decide again.</dd>
+      your notes or the drafts you have open. The item stays on Revise until you decide again. Once the agent has revised, your note is cleared and kept
+      under <em>Earlier notes</em> on the card.</dd>
     <dt>Drop</dt><dd>Don't use it.</dd>
     <dt>Clear</dt><dd>Back to not reviewed.</dd>
   </dl>

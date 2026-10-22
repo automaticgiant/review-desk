@@ -20,6 +20,7 @@ itself.
 
 - Tests: `uv run --offline pytest -q` (about 1 s). Mutation check: `bin/mutation-check` (about 15 s).
 - CLI: `bin/review-desk ...` (runs `uv run --offline` against this checkout).
+- Live page edits: every desk hot-swaps `static/page.css` and `static/page.js` into open pages within a few seconds, with no reload (notes, open drafts and scroll survive), so there is no flag and no restart for page changes. Python changes still need a restart, and a `page.js` that throws after loading needs a manual page reload.
 - A running desk: `lsof -nP -iTCP:8791 -sTCP:LISTEN`; log `~/.local/state/review-desk/desk-8791.log`. Restart it after
   changing server code: the page and manifest are live, Python code isn't.
 - `bin/export-public <dest> "<Name>" <email>`: export the current tree as a fresh, single-commit repository.

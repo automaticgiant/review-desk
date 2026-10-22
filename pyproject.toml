@@ -9,6 +9,10 @@ dependencies = [
     "markdown-it-py[linkify]>=4,<5",
 ]
 
+[project.optional-dependencies]
+# Only for checking the page in a real browser (Playwright's Chromium); the desk itself doesn't need it.
+browser = ["playwright>=1.40"]
+
 [project.scripts]
 review-desk = "review_desk.cli:main"
 

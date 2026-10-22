@@ -1,5 +1,6 @@
 import json
 import re
+import threading
 
 import pytest
 
@@ -435,3 +436,140 @@ def test_layout_version_matches_the_page_and_script_prompts_instead_of_reloading
     js = desk.get("/static/page.js")[2].decode()
     assert "X-Layout-Version" in js and "layout-changed" in js
     assert "location.reload" not in js  # the user chooses when to reload; a reload would lose open drafts and notes
+
+
+def test_history_endpoint_serves_archived_notes(desk):
+    assert json.loads(desk.get(f"/api/p/{desk.pid}/history")[2]) == {}
+    desk.put_item(desk.pid, "first-draft", {"decision": "revise", "note": "shorter"})
+    desk.put_item(desk.pid, "first-draft", {"decision": "", "note": ""})
+    st, _, body = desk.get(f"/api/p/{desk.pid}/history")
+    assert st == 200 and [e["note"] for e in json.loads(body)["first-draft"]] == ["shorter"]
+    assert "shorter" not in desk.get(f"/api/p/{desk.pid}/state")[2].decode()
+
+
+def test_history_endpoint_only_serves_registered_packets_with_a_good_host(desk):
+    assert desk.get("/api/p/nope-123456/history")[0] == 404
+    assert desk.get(f"/api/p/{desk.pid}/history", host="evil.example:80")[0] == 403
+    assert desk.get(f"/api/p/{desk.pid}/history/x")[0] == 404
+    (desk.packet / "review-history.json").write_text("{broken")
+    assert desk.get(f"/api/p/{desk.pid}/history")[0] == 500
+
+
+def test_history_route_segments_are_strict():
+    from review_desk import server
+    for seg in ("..", "%2e%2e", "A", "x/y", ""):
+        assert not any(rx.match(f"/api/p/{seg}/history") for rx, _ in server.ROUTES_GET)
+
+
+def test_cards_have_a_collapsed_earlier_notes_block_fed_from_history(desk):
+    body = desk.get(f"/p/{desk.pid}/")[2].decode()
+    assert body.count('<details class="earlier" data-earlier hidden>') == body.count('class="card"')
+    assert body.index("data-earlier") > body.index("data-note") and body.index("data-earlier") < body.index('class="draft"')
+    js = desk.get("/static/page.js")[2].decode()
+    assert "/history" in js and "data-earlier-list" in js
+    hist = js.split("async function refreshHistory", 1)[1].split("function refresh(", 1)[0]
+    assert "textContent" in hist and "innerHTML" not in hist  # notes are the human's text, never parsed as HTML
+
+
+def test_hiding_a_reviewed_card_folds_its_draft_first(desk):
+    """collapse() closes the draft before it measures the card, so the card shrinks from its short form."""
+    js = desk.get("/static/page.js")[2].decode()
+    body = js.split("function collapse(card)", 1)[1].split("function scheduleHide", 1)[0]
+    fold = body.index('querySelector("details.draft").open = false')
+    assert fold < body.index("card.offsetHeight") and fold < body.index('classList.add("fading")')
+
+
+# ---- hot swap: on by default, no flag ------------------------------------
+
+def test_static_version_header_is_always_sent(desk):
+    import hashlib
+    from importlib import resources
+    def h(n):
+        return hashlib.sha1(resources.files("review_desk").joinpath("static", n).read_bytes()).hexdigest()[:12]
+    assert desk.get(f"/api/p/{desk.pid}/drafts")[1].get("X-Static-Version") == f"{h('page.css')}.{h('page.js')}"
+
+
+def test_static_version_follows_the_files(desk, monkeypatch):
+    from review_desk import server
+    before = desk.get(f"/api/p/{desk.pid}/drafts")[1]["X-Static-Version"]
+    real = server.resources.files
+    class Fake:
+        def joinpath(self, *parts):
+            f = real("review_desk").joinpath(*parts)
+            class R:
+                def read_bytes(s): return f.read_bytes() + (b"//x" if parts[-1] == "page.js" else b"")
+            return R()
+    monkeypatch.setattr(server.resources, "files", lambda _n: Fake())
+    assert desk.get(f"/api/p/{desk.pid}/drafts")[1]["X-Static-Version"] != before
+
+
+def test_static_version_splits_css_from_js(registry, packet, monkeypatch):
+    """A css-only change must not look like a script change (that would needlessly re-run the script)."""
+    from review_desk import server
+    base = server.static_version()
+    real = server.resources.files
+    class Fake:
+        def joinpath(self, *parts):
+            f = real("review_desk").joinpath(*parts)
+            class R:
+                def read_bytes(s): return f.read_bytes() + (b"/*x*/" if parts[-1] == "page.css" else b"")
+            return R()
+    monkeypatch.setattr(server.resources, "files", lambda _n: Fake())
+    css, js = server.static_version().split(".")
+    assert css != base.split(".")[0] and js == base.split(".")[1]
+
+
+def test_page_js_swaps_code_in_place_and_tears_the_old_copy_down(desk):
+    js = desk.get("/static/page.js")[2].decode()
+    block = js.split("X-Static-Version", 1)[1].split("const versions", 1)[0]
+    assert "swapStylesheet(" in block and "loadScript(" in block
+    # one place binds listeners, always tied to the abort signal, so a replaced copy can detach every one of them
+    assert js.count("addEventListener") == 1 and "signal: ac.signal" in js and "ac.abort()" in js
+    assert "clearInterval(poll)" in js and "window.__deskDispose" in js
+    # a hot swap must not disable the fields (that would drop focus mid-note) or blank them with an empty first render
+    assert "let connected = hot" in js and "if (!hot) { render(); setConn(false" in js
+
+
+def test_serve_has_no_dev_flag_and_background_desks_hot_swap_too(state_dir, capsys):
+    """Hot swap is the desk's normal behaviour, so there is nothing to opt into, background or not."""
+    from review_desk import cli
+    with pytest.raises(SystemExit):
+        cli.main(["serve", "--dev", "--port", "1"])
+    assert "unrecognized arguments: --dev" in capsys.readouterr().err
+
+
+def test_put_if_decision_conflict_is_409_and_changes_nothing(desk):
+    desk.put_item(desk.pid, "first-draft", {"decision": "revise", "note": "shorter"})
+    desk.put_item(desk.pid, "first-draft", {"decision": "approve"})  # the human moved on
+    before = (desk.packet / "review-decisions.json").read_bytes()
+    st, _, body = desk.put_item(desk.pid, "first-draft", {"decision": "", "note": "", "ifDecision": "revise"})
+    assert st == 409 and b"revise" in body
+    assert (desk.packet / "review-decisions.json").read_bytes() == before
+    desk.put_item(desk.pid, "first-draft", {"decision": "revise"})
+    assert desk.put_item(desk.pid, "first-draft", {"decision": "", "note": "", "ifDecision": "revise"})[0] == 200
+    assert desk.put_item(desk.pid, "first-draft", {"ifDecision": "revise"})[0] == 400
+
+
+# ---- review findings: stale note, hot-swap teardown, one load per script change -----------------
+
+def test_a_focused_field_follows_the_server_and_only_unsaved_typing_is_protected(desk):
+    """A cleared note must replace stale text in a field the cursor is still in, or blur would write it back."""
+    js = desk.get("/static/page.js")[2].decode()
+    render = js.split("function render()", 1)[1].split("function setConn", 1)[0]
+    assert "activeElement" not in render and "!note.dataset.dirty" in render
+    # a save that went out before more typing must not mark the newer text as saved
+    assert "field.value === patch.note" in js
+
+
+def test_a_replaced_script_stops_touching_the_page(desk):
+    js = desk.get("/static/page.js")[2].decode()
+    assert "dead = true" in js
+    for fn in ("function render()", "function setConn("):
+        assert "if (dead) return;" in js.split(fn, 1)[1].split("\n", 3)[1] + js.split(fn, 1)[1].split("\n", 3)[2]
+    assert "const d = card.dataset.decision;" in js and "state[card.dataset.id]?.decision" not in js
+    assert "if (!r.ok || dead) return;" in js and "if (dead) return; state = s" in js
+
+
+def test_a_changed_script_is_loaded_once_per_change(desk):
+    js = desk.get("/static/page.js")[2].decode()
+    assert "{ staticVersion.js = js; return loadScript(js); }" in js

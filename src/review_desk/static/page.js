@@ -1,6 +1,17 @@
 // review-desk page script (served from /static so the CSP can forbid inline script).
 // Packet page: per-item PUTs (merge on the server), debounced notes, tally, and a poll so other tabs' changes show up.
 (() => {
+  // Hot swap (`serve --dev`): a newer copy of this script replaces the running one in place. The old copy detaches
+  // everything it bound and stops polling; the DOM (notes being typed, open drafts, scroll) is left exactly as it is.
+  const hot = typeof window.__deskDispose === "function";
+  if (hot) window.__deskDispose();
+  const ac = new AbortController();
+  const listen = (target, type, fn, opts) => target.addEventListener(type, fn, { ...opts, signal: ac.signal });
+  let poll = null, dead = false;
+  // A replaced copy must not touch the page any more (render, connection state, fetch results), or it would fight the
+  // new one with its frozen state. Pending note saves still go out: they're the human's text.
+  window.__deskDispose = () => { dead = true; ac.abort(); clearInterval(poll); };
+
   const fmt = iso => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString(); };
 
   if (document.body.dataset.page === "index") {
@@ -11,7 +22,7 @@
       const DONE_KEY = "review-desk:show-done";
       const applyDone = on => { doneToggle.checked = on; document.body.classList.toggle("show-done", on); };
       try { applyDone(localStorage.getItem(DONE_KEY) === "1"); } catch { applyDone(false); }
-      doneToggle.addEventListener("change", () => {
+      listen(doneToggle, "change", () => {
         applyDone(doneToggle.checked);
         try { localStorage.setItem(DONE_KEY, doneToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
       });
@@ -26,7 +37,7 @@
   const WRAP_KEY = "review-desk:wrap-lines";
   const applyWrap = on => { wrapToggle.checked = on; document.body.classList.toggle("wrap-lines", on); };
   try { applyWrap(localStorage.getItem(WRAP_KEY) === "1"); } catch { applyWrap(false); }
-  wrapToggle.addEventListener("change", () => {
+  listen(wrapToggle, "change", () => {
     applyWrap(wrapToggle.checked);
     try { localStorage.setItem(WRAP_KEY, wrapToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
   });
@@ -62,6 +73,8 @@
       if (top !== last) window.scrollBy({ top: top - last, behavior: "instant" });
       last = anchor.getBoundingClientRect().top;
     };
+    card.querySelector("details.draft").open = false; // fold a long draft away first, so the card collapses from its short form
+    keep();
     card.style.height = card.offsetHeight + "px";
     card.style.overflow = "hidden";
     card.classList.add("fading");
@@ -83,13 +96,13 @@
     cancelHide(card);
     if (!document.body.classList.contains("hide-reviewed")) return;
     hideTimers.set(card, setTimeout(() => {
-      const d = state[card.dataset.id]?.decision;
+      const d = card.dataset.decision; // from the DOM, so a copy that replaced this one is respected
       if (!document.body.classList.contains("hide-reviewed") || (d !== "approve" && d !== "drop")) return cancelHide(card);
       hideTimers.delete(card);
       collapse(card);
     }, HIDE_DELAY));
   }
-  hideToggle.addEventListener("change", () => {
+  listen(hideToggle, "change", () => {
     applyHide(hideToggle.checked);
     for (const c of [...hideTimers.keys()]) cancelHide(c);
     for (const c of document.querySelectorAll(".just-decided")) c.classList.remove("just-decided");
@@ -99,23 +112,24 @@
   // Instructions: a native modal <dialog>. The bar button toggles it; Esc, Close and a click on the backdrop dismiss it.
   const helpToggle = document.getElementById("help-toggle");
   const helpDialog = document.getElementById("help-dialog");
-  helpToggle.addEventListener("click", () => {
+  listen(helpToggle, "click", () => {
     if (helpDialog.open) helpDialog.close(); else { helpDialog.showModal(); helpToggle.setAttribute("aria-expanded", "true"); }
   });
-  helpDialog.addEventListener("close", () => { helpToggle.setAttribute("aria-expanded", "false"); helpToggle.focus(); });
-  helpDialog.addEventListener("click", ev => { if (ev.target === helpDialog) helpDialog.close(); });
+  listen(helpDialog, "close", () => { helpToggle.setAttribute("aria-expanded", "false"); helpToggle.focus(); });
+  listen(helpDialog, "click", ev => { if (ev.target === helpDialog) helpDialog.close(); });
 
   const pid = document.body.dataset.pid;
   const api = `/api/p/${pid}`;
   const conn = document.getElementById("conn");
   const offline = document.getElementById("offline");
-  let connected = false;
+  let connected = hot; // a hot swap keeps the page usable: don't disable the fields while reconnecting
   const cards = [...document.querySelectorAll(".card")];
   const label = { approve: "Approved", revise: "Revise", drop: "Dropped", "": "Not reviewed" };
   let state = {};
   const queues = {}; // per-item promise chain keeps one item's writes in order
 
   function render() {
+    if (dead) return;
     const counts = { approve: 0, revise: 0, drop: 0, open: 0 };
     for (const card of cards) {
       const s = state[card.dataset.id] || {};
@@ -126,7 +140,9 @@
         b.setAttribute("aria-pressed", String(b.dataset.decision === d && d !== ""));
       }
       const note = card.querySelector("[data-note]");
-      if (document.activeElement !== note && !note.dataset.dirty) note.value = s.note || "";
+      // Only unsaved typing is protected, not mere focus: a field the human left the cursor in must still follow the
+      // server (an agent clearing the note), or its stale text would be written back on blur.
+      if (!note.dataset.dirty && note.value !== (s.note || "")) note.value = s.note || "";
       card.querySelector("[data-saved]").textContent = s.updatedAt ? "Saved " + fmt(s.updatedAt) : "";
       if (counts[d] !== undefined && d) counts[d]++; else counts.open++;
     }
@@ -139,6 +155,7 @@
   }
 
   function setConn(ok, text) {
+    if (dead) return;
     connected = ok;
     conn.textContent = text;
     conn.classList.toggle("bad", !ok);
@@ -164,7 +181,10 @@
     }).then(async r => {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
       state[id] = await r.json();
-      if ("note" in patch) delete cards.find(c => c.dataset.id === id).querySelector("[data-note]").dataset.dirty;
+      if ("note" in patch) {
+        const field = cards.find(c => c.dataset.id === id).querySelector("[data-note]");
+        if (field.value === patch.note) delete field.dataset.dirty; // typed more since this save went out: still unsaved
+      }
       render();
       setConn(true, "Saved");
     }).catch(e => {
@@ -179,33 +199,87 @@
   for (const card of cards) {
     const id = card.dataset.id;
     for (const b of card.querySelectorAll("button[data-decision]")) {
-      b.addEventListener("click", () => put(id, { decision: b.dataset.decision }));
+      listen(b, "click", () => put(id, { decision: b.dataset.decision }));
     }
     const note = card.querySelector("[data-note]");
     let t;
-    note.addEventListener("input", () => {
+    listen(note, "input", () => {
       note.dataset.dirty = "1";
       clearTimeout(t);
       t = setTimeout(() => put(id, { note: note.value }), 700);
     });
-    note.addEventListener("blur", () => {
+    listen(note, "blur", () => {
       clearTimeout(t);
       if ((state[id]?.note || "") !== note.value) put(id, { note: note.value });
     });
   }
 
+  // Floating note: while a note field has focus (and its cursor), its box floats at the bottom of the window if that
+  // card's draft is on screen and the note's regular place is not. The slot holds the box's height so nothing jumps.
+  const inView = r => r.bottom > 0 && r.top < window.innerHeight;
+  function updateFloat() {
+    for (const card of cards) {
+      const slot = card.querySelector(".note-slot");
+      const box = slot.firstElementChild;
+      const note = box.querySelector("[data-note]");
+      const body = card.querySelector(".draft-body");
+      const open = card.querySelector("details.draft").open;
+      const want = document.activeElement === note && open && inView(body.getBoundingClientRect())
+        && !inView(slot.getBoundingClientRect());
+      if (want === box.classList.contains("floating")) {
+        if (want) { const r = slot.getBoundingClientRect(); box.style.left = r.left + "px"; box.style.width = r.width + "px"; }
+        continue;
+      }
+      if (want) {
+        const r = slot.getBoundingClientRect();
+        slot.style.height = box.offsetHeight + "px";
+        box.style.left = r.left + "px";
+        box.style.width = r.width + "px";
+      } else {
+        slot.style.removeProperty("height");
+        box.style.removeProperty("left");
+        box.style.removeProperty("width");
+      }
+      box.classList.toggle("floating", want);
+    }
+  }
+  for (const ev of ["scroll", "resize", "focusin", "focusout", "toggle"]) listen(window, ev, updateFloat, { capture: true, passive: true });
+  for (const note of document.querySelectorAll("[data-note]")) listen(note, "input", updateFloat);
+
   // Live drafts: when an agent edits a draft file, swap that one draft's body in place. Nothing else on the page is
   // touched (notes being typed, open drafts, scroll position, the help dialog), so there is never a reload.
-  let draftsBusy = false;
+  let draftsBusy = false, staticVersion = null;
+  function swapStylesheet(v) {
+    const old = document.querySelector('link[rel="stylesheet"][href^="/static/page.css"]');
+    const next = old.cloneNode();
+    next.href = `/static/page.css?v=${v}`;
+    next.onload = () => old.remove(); // the old sheet stays until the new one is in: no flash of unstyled page
+    old.after(next);
+  }
+  function loadScript(v) {
+    const el = document.createElement("script");
+    el.src = `/static/page.js?v=${v}`;
+    document.head.append(el); // runs the new copy, which disposes this one first
+  }
   async function refreshDrafts() {
     if (draftsBusy) return;
     draftsBusy = true;
     try {
       const r = await fetch(`${api}/drafts`, { cache: "no-store" });
-      if (!r.ok) return;
+      if (!r.ok || dead) return;
       // The manifest (items, titles, facts) changed: offer a reload rather than doing one, which would lose open drafts.
       const layout = r.headers.get("X-Layout-Version");
       if (layout && layout !== document.body.dataset.layoutVersion) document.getElementById("layout-changed").hidden = false;
+      // `serve --dev` only: apply page.css / page.js changes in place, never a reload (that would lose notes, open
+      // drafts and scroll). The stylesheet is swapped; a changed script is loaded and replaces this running copy.
+      const sv = r.headers.get("X-Static-Version");
+      if (sv) {
+        const [css, js] = sv.split(".");
+        if (staticVersion && css !== staticVersion.css) swapStylesheet(css);
+        if (staticVersion && js !== staticVersion.js) { staticVersion.js = js; return loadScript(js); } // once per change, even if the new file is broken
+        staticVersion ??= { css, js };
+        staticVersion.css = css;
+      }
       const versions = await r.json();
       for (const card of cards) {
         const id = card.dataset.id;
@@ -221,18 +295,45 @@
     finally { draftsBusy = false; }
   }
 
+  // Earlier notes: what the human asked for before an agent revised the draft and cleared the note. Built with
+  // textContent only, newest first, collapsed; it never touches the draft or the notes field.
+  let historyJson = "";
+  async function refreshHistory() {
+    try {
+      const r = await fetch(`${api}/history`, { cache: "no-store" });
+      if (!r.ok) return;
+      const text = await r.text();
+      if (dead || text === historyJson) return;
+      historyJson = text;
+      const h = JSON.parse(text);
+      for (const card of cards) {
+        const entries = Array.isArray(h[card.dataset.id]) ? [...h[card.dataset.id]].reverse() : [];
+        const box = card.querySelector("[data-earlier]");
+        const list = box.querySelector("[data-earlier-list]");
+        list.replaceChildren(...entries.map(en => {
+          const li = document.createElement("li");
+          const t = document.createElement("time");
+          t.textContent = "Revision requested " + fmt(en.at);
+          li.append(t, String(en.note));
+          return li;
+        }));
+        box.querySelector("[data-earlier-count]").textContent = entries.length;
+        box.hidden = entries.length === 0;
+      }
+    } catch { /* the next tick tries again */ }
+  }
+
   function refresh(first) {
     return fetch(`${api}/state`, { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(s => { state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); })
-      .catch(() => setConn(false, "Not connected"));
+      .then(s => { if (dead) return; state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); refreshHistory(); })
+      .catch(() => setConn(false, "Not connected")); // setConn ignores a replaced copy
   }
 
-  render();
-  setConn(false, "Connecting…");
+  if (!hot) { render(); setConn(false, "Connecting…"); }
   refresh(true);
   // A cheap local check every 3 s: a desk that stops shows the banner within seconds,
   // and the banner clears soon after it's back.
-  setInterval(() => { if (!document.hidden) refresh(!connected); }, 3000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(false); });
+  poll = setInterval(() => { if (!document.hidden) refresh(!connected); }, 3000);
+  listen(document, "visibilitychange", () => { if (!document.hidden) refresh(false); });
 })();
