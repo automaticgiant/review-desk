@@ -47,8 +47,11 @@ review-desk status ~/work/drafts                             # later, from any s
 
 The desk serves every registered packet from one process, on port **8791** by default (`--port`, or `$REVIEW_DESK_PORT`).
 The index at <http://127.0.0.1:8791/> lists packets with approve, revise, drop and pending counts, and when each was last
-touched. Each packet page is rendered from its manifest and draft files on every request, so an edited draft shows on reload
-with no rebuild.
+touched. Each packet page is rendered from its manifest and draft files on every request, so an edited draft shows with no rebuild. An
+open packet page also picks up a changed draft by itself within a few seconds (only that draft's text is swapped, so
+notes you're typing, open drafts and your scroll position stay put). A changed manifest (items, titles, facts) shows a
+"Reload" prompt instead, so a reload never costs you open drafts. The bar's "Hide reviewed" checkbox hides approved and
+dropped items (revise stays visible); it is per browser, and a card you just decided stays until you toggle.
 
 <img src="docs/screenshots/index.png" width="720"
      alt="The desk's index page listing three packets, Release 2.4 follow-ups, Docs cleanup and Onboarding guide edits, each with approve, revise, drop and pending counts, its path, and when it was last touched.">
@@ -149,7 +152,7 @@ existing decisions files keep working. Ids that leave the manifest keep their re
    printed). Don't ask for the decisions in chat; move on.
 3. **Later, in any session: `review-desk status <dir> --json`.** Act only on what's there:
    - `approve`: do it (the click is the approval for that item, but follow your project's own rules for logging it);
-   - `revise`: edit the draft per the `note`. The page re-renders it on reload. Say which items changed; they get re-decided;
+   - `revise`: edit the draft per the `note`. The open page swaps the new text in within a few seconds, without a reload. Say which items changed; they get re-decided;
    - `drop`: don't do it; leave the file;
    - `undecided`: leave it alone; it's still waiting.
 4. Never write `review-decisions.json` yourself. Decisions are the reviewer's. (The desk's PUT API exists for the page.)

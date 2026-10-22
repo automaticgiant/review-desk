@@ -12,6 +12,28 @@ def test_index_lists_packet(desk):
     assert "default-src 'none'" in h["Content-Security-Policy"]
 
 
+def _row(pid, pending, total=2):
+    counts = {"approve": total - pending, "revise": 0, "drop": 0, "pending": pending, "total": total}
+    return {"id": pid, "path": f"/x/{pid}", "title": f"T {pid}", "counts": counts, "lastTouched": None, "error": None}
+
+
+def test_index_hides_packets_with_nothing_pending_behind_a_checkbox():
+    from review_desk import render
+    html = render.index_page([_row("open-aaaaaa", 1), _row("done-bbbbbb", 0)])
+    m = re.search(r'<input type="checkbox" id="done-toggle"[^>]*>', html)
+    assert m and "checked" not in m.group(0)  # hidden by default
+    assert "(1)" in html.split('id="done-toggle"', 1)[1].split("</label>", 1)[0]
+    assert 'class="packet done"' in html and 'class="packet"' in html  # done ones are tagged, not dropped
+    assert "done-toggle" not in render.index_page([_row("open-aaaaaa", 1)])  # nothing to toggle
+
+
+def test_index_done_packets_hidden_by_css_and_toggle_persists(desk):
+    css = desk.get("/static/page.css")[2].decode()
+    assert re.search(r"body:not\(\.show-done\)\s+\.packet\.done\s*\{[^}]*display:\s*none", css)
+    js = desk.get("/static/page.js")[2].decode()
+    assert "done-toggle" in js and "show-done" in js and "localStorage" in js
+
+
 def test_packet_page_renders_items(desk):
     st, _, body = desk.get(f"/p/{desk.pid}/")
     assert st == 200
@@ -264,3 +286,152 @@ def test_packet_page_has_a_wrap_toggle(desk):
     css = desk.get("/static/page.css")[2].decode()
     assert re.search(r"\.wrap-lines pre[^{]*\{[^}]*white-space:\s*pre-wrap", css)
     assert "wrap-toggle" not in desk.get("/")[2].decode()  # the index has no drafts to wrap
+
+
+def test_packet_page_has_a_toggleable_help_dialog(desk):
+    """Instructions live in a native <dialog>, closed by default; a bar button toggles it (no inline script)."""
+    body = desk.get(f"/p/{desk.pid}/")[2].decode()
+    bar = body.split('id="bar"', 1)[1].split("</div>", 1)[0]
+    btn = re.search(r'<button[^>]*id="help-toggle"[^>]*>', bar)
+    assert btn and 'type="button"' in btn.group(0)
+    assert 'aria-controls="help-dialog"' in btn.group(0) and 'aria-expanded="false"' in btn.group(0)
+    dlg = re.search(r'<dialog[^>]*id="help-dialog"[^>]*>(.*?)</dialog>', body, re.S)
+    assert dlg and " open" not in dlg.group(0).split(">", 1)[0]
+    text = dlg.group(1)
+    for word in ("Approve", "Revise", "Drop", "Clear", "Notes for the agent", "review-decisions.json"):
+        assert word in text
+    assert 'id="help-close"' in text
+    js = desk.get("/static/page.js")[2].decode()
+    assert "showModal" in js and "help-toggle" in js and "aria-expanded" in js
+    assert "<script>" not in body  # CSP forbids inline script
+    assert "help-dialog" not in desk.get("/")[2].decode()  # the index has no decisions to explain
+
+
+# ---- live draft refresh: the page swaps one changed draft in place, never reloads ----------------
+
+def _versions(desk):
+    st, h, body = desk.get(f"/api/p/{desk.pid}/drafts")
+    assert st == 200 and h["Content-Type"].startswith("application/json")
+    return json.loads(body)
+
+
+def test_draft_versions_change_only_for_the_edited_draft(desk):
+    v0 = _versions(desk)
+    assert set(v0) == {"first-draft", "second-draft"} and all(isinstance(v, str) and v for v in v0.values())
+    assert _versions(desk) == v0  # stable while nothing changes
+    (desk.packet / "first-draft.md").write_text("# First\n\nrewritten by the agent")
+    v1 = _versions(desk)
+    assert v1["first-draft"] != v0["first-draft"] and v1["second-draft"] == v0["second-draft"]
+
+
+def test_draft_fragment_returns_rendered_html_and_matching_version(desk):
+    st, h, body = desk.get(f"/api/p/{desk.pid}/drafts/first-draft")
+    got = json.loads(body)
+    assert st == 200 and h["Content-Type"].startswith("application/json") and set(got) == {"version", "html"}
+    assert "<h1>First</h1>" in got["html"] and "body one" in got["html"]
+    assert got["version"] == _versions(desk)["first-draft"]
+    (desk.packet / "first-draft.md").write_text("# First\n\nnew words")
+    after = json.loads(desk.get(f"/api/p/{desk.pid}/drafts/first-draft")[2])
+    assert "new words" in after["html"] and "body one" not in after["html"] and after["version"] != got["version"]
+
+
+def test_draft_fragment_matches_what_the_page_renders(desk):
+    page = desk.get(f"/p/{desk.pid}/")[2].decode()
+    frag = json.loads(desk.get(f"/api/p/{desk.pid}/drafts/second-draft")[2])
+    card = page.split('data-id="second-draft"', 1)[1]
+    assert f'data-draft-version="{frag["version"]}"' in page.split('data-id="second-draft"', 1)[0] + card[:200]
+    assert f'<div class="draft-body">{frag["html"]}</div>' in card
+
+
+def test_draft_fragment_escapes_untrusted_text(desk):
+    (desk.packet / "first-draft.md").write_text("<script>alert(1)</script>\n\n[c](javascript:alert(2))")
+    for body in (desk.get(f"/api/p/{desk.pid}/drafts/first-draft")[2],):
+        html = json.loads(body)["html"]
+        assert "<script>" not in html and "javascript:" not in html and "&lt;script&gt;" in html
+
+
+def test_draft_endpoints_cover_a_draft_that_goes_missing_and_returns(desk):
+    (desk.packet / "sub" / "second.md").unlink()
+    gone = json.loads(desk.get(f"/api/p/{desk.pid}/drafts/second-draft")[2])
+    assert "not found" in gone["html"].lower() and gone["version"] == _versions(desk)["second-draft"]
+    (desk.packet / "sub" / "second.md").write_text("# Back")
+    back = json.loads(desk.get(f"/api/p/{desk.pid}/drafts/second-draft")[2])
+    assert "Back" in back["html"] and back["version"] != gone["version"]
+
+
+def test_draft_endpoints_only_serve_manifest_items_of_registered_packets(desk):
+    assert desk.get(f"/api/p/{desk.pid}/drafts/not-in-manifest")[0] == 404
+    assert desk.get(f"/api/p/{desk.pid}/drafts/review")[0] == 404  # review.toml is not an item
+    assert desk.get("/api/p/nope-123456/drafts")[0] == 404
+    assert desk.get("/api/p/nope-123456/drafts/first-draft")[0] == 404
+    for path in ("/api/p/{pid}/drafts/../state", "/api/p/{pid}/drafts/%2e%2e%2fstate", "/api/p/{pid}/drafts/first-draft/x",
+                 "/api/p/{pid}/drafts/first-draft.md"):
+        st, _, body = desk.get(path.format(pid=desk.pid))
+        assert st == 404 and b"body one" not in body
+
+
+@pytest.mark.parametrize("suffix", ["drafts", "drafts/first-draft"])
+def test_draft_endpoints_check_the_host_header(desk, suffix):
+    assert desk.get(f"/api/p/{desk.pid}/{suffix}", host="evil.example:80")[0] == 403
+    assert desk.get(f"/api/p/{desk.pid}/{suffix}", host=f"localhost:{desk.port}")[0] == 200
+
+
+def test_packet_page_and_script_support_in_place_draft_refresh(desk):
+    page = desk.get(f"/p/{desk.pid}/")[2].decode()
+    versions = _versions(desk)
+    for item, v in versions.items():
+        art = re.search(rf'<article[^>]*data-id="{item}"[^>]*>', page).group(0)
+        assert f'data-draft-version="{v}"' in art
+    assert page.count("data-draft-updated") == len(versions)
+    js = desk.get("/static/page.js")[2].decode()
+    assert "/drafts" in js and "draftVersion" in js and ".draft-body" in js
+    assert "location.reload" not in js  # never a reload: it would lose notes, scroll and open drafts
+
+
+# ---- issue #2: hide reviewed items ---------------------------------------------------------------
+
+def test_packet_page_has_a_hide_reviewed_toggle(desk):
+    """A per-viewer preference like wrap: a checkbox in the bar, off by default, kept in localStorage.
+    Approved and dropped cards hide; revise stays visible because it still needs a decision."""
+    body = desk.get(f"/p/{desk.pid}/")[2].decode()
+    bar = body.split('id="bar"', 1)[1].split("</div>", 1)[0]
+    m = re.search(r'<input type="checkbox" id="hide-reviewed-toggle"[^>]*>', bar)
+    assert m and "checked" not in m.group(0)
+    assert "Hide reviewed" in bar
+    css = desk.get("/static/page.css")[2].decode()
+    rule = re.search(r"body\.hide-reviewed\s+\.card:not\(\.just-decided\)\[data-decision=\"approve\"\][^{]*\{[^}]*display:\s*none", css)
+    assert rule and 'data-decision="drop"' in css.split("body.hide-reviewed", 1)[1].split("{", 1)[0]
+    assert 'data-decision="revise"' not in css.split("body.hide-reviewed", 1)[1].split("{", 1)[0]
+    js = desk.get("/static/page.js")[2].decode()
+    assert "hide-reviewed-toggle" in js and "hide-reviewed" in js and "just-decided" in js and "localStorage" in js
+    assert "hide-reviewed-toggle" not in desk.get("/")[2].decode()
+
+
+# ---- issue #1: a changed manifest is noticed, without a reload ------------------------------------
+
+def _layout(desk):
+    st, h, _ = desk.get(f"/api/p/{desk.pid}/drafts")
+    assert st == 200 and h.get("X-Layout-Version")
+    return h["X-Layout-Version"]
+
+
+def test_layout_version_tracks_the_manifest_not_the_draft_text(desk):
+    v0 = _layout(desk)
+    assert _layout(desk) == v0
+    (desk.packet / "first-draft.md").write_text("# First\n\nonly the draft text changed")
+    assert _layout(desk) == v0  # draft text is swapped in place, so it must not trigger the reload prompt
+    toml = desk.packet / "review.toml"
+    toml.write_text(toml.read_text().replace('title = "Second draft"', 'title = "Second draft, retitled"'))
+    v1 = _layout(desk)
+    assert v1 != v0
+    toml.write_text(toml.read_text() + '\n[[items]]\nid = "third-draft"\ntitle = "Third"\nkind = "x"\nfile = "first-draft.md"\n')
+    assert _layout(desk) not in (v0, v1)
+
+
+def test_layout_version_matches_the_page_and_script_prompts_instead_of_reloading(desk):
+    page = desk.get(f"/p/{desk.pid}/")[2].decode()
+    assert re.search(rf'<body[^>]*data-layout-version="{_layout(desk)}"', page)
+    assert re.search(r'id="layout-changed"[^>]*hidden', page)  # prompt exists, hidden until the manifest changes
+    js = desk.get("/static/page.js")[2].decode()
+    assert "X-Layout-Version" in js and "layout-changed" in js
+    assert "location.reload" not in js  # the user chooses when to reload; a reload would lose open drafts and notes

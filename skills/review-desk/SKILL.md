@@ -59,8 +59,8 @@ down.
    in the manifest.
 7. **Act only on what's decided:**
    - `approve`: do it, as drafted (plus any small change the note asks for).
-   - `revise`: treat the note as instructions. Edit the draft file; the page re-renders it on reload. Tell the human
-     which items changed so they can decide again. Don't act on a revised item until it's approved.
+   - `revise`: treat the note as instructions. Edit the draft file; the open page swaps the new text in within a few seconds (no reload, so the human's notes and open drafts are undisturbed). Tell the
+     human which items changed so they can decide again. Don't act on a revised item until it's approved.
    - `drop`: don't do it. Leave the file.
    - pending (`null`): don't act; it's still waiting.
 

@@ -9,6 +9,7 @@ The server also sends a CSP that allows only its own script and stylesheet, as a
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from pathlib import Path
@@ -114,6 +115,10 @@ def index_page(rows: list[dict]) -> str:
   <p class="pmeta"><code>{e(display_path(r["path"]))}</code> · last touched <time data-iso="{touched}">{touched}</time></p>
 </li>''')
         listing = '<ul class="packets">' + "\n".join(lis) + "</ul>"
+        n_done = sum(1 for r in rows if not r.get("error") and r["counts"]["pending"] == 0)
+        if n_done:
+            listing = (f'<label class="done-toggle"><input type="checkbox" id="done-toggle"> '
+                       f'Show packets with nothing pending ({n_done})</label>\n') + listing
     else:
         listing = '<p class="intro">No packets registered. Run <code>review-desk add &lt;dir&gt;</code>.</p>'
     body = f'''<main class="wrap">
@@ -125,7 +130,7 @@ def index_page(rows: list[dict]) -> str:
     return _shell("Review desk", body, ' data-page="index"')
 
 
-def _card(n: int, item: Item, draft_html: str, pid: str) -> str:
+def _card(n: int, item: Item, draft_html_: str, pid: str) -> str:
     sid = e(item.id)
     facts = [("Recommendation", md_inline(item.recommendation))] if item.recommendation else []
     facts += [(e(k), md_inline(v)) for k, v in item.facts.items()]
@@ -135,7 +140,7 @@ def _card(n: int, item: Item, draft_html: str, pid: str) -> str:
         facts.append(("Draft", f'<code>{e(item.file)}</code> · <a href="/p/{e(pid)}/raw/{sid}">raw</a>'))
     dl = "".join(f"<div><dt>{k}</dt><dd>{v}</dd></div>" for k, v in facts)
     return f'''
-<article class="card" data-id="{sid}" id="{sid}">
+<article class="card" data-id="{sid}" id="{sid}" data-draft-version="{draft_version(draft_html_)}">
   <header class="card-head">
     <span class="num">{n}</span>
     <div class="head-text">
@@ -154,7 +159,8 @@ def _card(n: int, item: Item, draft_html: str, pid: str) -> str:
   <label class="note-label" for="{sid}-note">Notes for the agent</label>
   <textarea id="{sid}-note" data-note rows="2" placeholder="What to change, who to ask, anything else"></textarea>
   <p class="saved" data-saved aria-live="polite"></p>
-  <details class="draft"><summary>Read the draft</summary><div class="draft-body">{draft_html}</div></details>
+  <p class="saved" data-draft-updated aria-live="polite"></p>
+  <details class="draft"><summary>Read the draft</summary><div class="draft-body">{draft_html_}</div></details>
 </article>'''
 
 
@@ -170,14 +176,49 @@ def draft_html(packet: Packet, item: Item) -> str:
     return md(text)
 
 
+HELP_DIALOG = """<dialog id="help-dialog" class="help" aria-labelledby="help-title">
+  <h2 id="help-title">How this works</h2>
+  <p>An agent drafted these items and is waiting on you. Decide each one; nothing is sent or acted on until you approve it.</p>
+  <dl>
+    <dt>Approve</dt><dd>The draft is good as written. The agent may use it.</dd>
+    <dt>Revise</dt><dd>Close, but change it. Say what in <em>Notes for the agent</em>. The agent edits the draft file and
+      tells you which items changed. The new text appears here on its own within a few seconds, without disturbing
+      your notes or the drafts you have open. The item stays on Revise until you decide again.</dd>
+    <dt>Drop</dt><dd>Don't use it.</dd>
+    <dt>Clear</dt><dd>Back to not reviewed.</dd>
+  </dl>
+  <p>Notes save as you type. Decisions save as you click, to <code>review-decisions.json</code> beside the packet's
+    <code>review.toml</code>. The agent reads them with <code>review-desk status</code> the next time it checks, so
+    tell it to look once you're done. The page only talks to this machine.</p>
+  <form method="dialog"><button id="help-close" type="submit">Close</button></form>
+</dialog>"""
+
+
+def draft_version(rendered: str) -> str:
+    """A short fingerprint of a rendered draft; the page compares it to see whether an agent changed the draft."""
+    return hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:12]
+
+
+def layout_version(pid: str, packet: Packet) -> str:
+    """Fingerprint of everything on the packet page except the draft bodies (those are swapped in place)."""
+    return draft_version(_packet_html(pid, packet, False, ""))
+
+
 def packet_page(pid: str, packet: Packet) -> str:
+    return _packet_html(pid, packet, True, layout_version(pid, packet))
+
+
+def _packet_html(pid: str, packet: Packet, drafts: bool, layout: str) -> str:
     n = len(packet.items)
-    cards = "\n".join(_card(i, it, draft_html(packet, it), pid) for i, it in enumerate(packet.items, 1))
+    cards = "\n".join(_card(i, it, draft_html(packet, it) if drafts else "", pid) for i, it in enumerate(packet.items, 1))
     links = f'<p class="plinks">{_links(packet.links)}</p>' if packet.links else ""
     body = f'''<div class="offline" role="alert" id="offline" hidden>
   <strong>Not connected to the review desk: not saving.</strong>
   Clicks and notes on this page won't be kept until it reconnects. Start the desk with <code>review-desk serve</code>
   (or <code>review-desk open</code>); this page reconnects on its own.
+</div>
+<div class="notice" id="layout-changed" role="status" hidden>
+  The packet's manifest changed (items, titles or facts). <a href="">Reload</a> to see it; your notes are already saved.
 </div>
 <div class="bar" id="bar">
   <a class="back" href="/">← All packets</a>
@@ -187,8 +228,11 @@ def packet_page(pid: str, packet: Packet) -> str:
   <span class="pill drop" id="n-drop">0 dropped</span>
   <span class="pill" id="n-open">{n} not reviewed</span>
   <label class="wrap-toggle"><input type="checkbox" id="wrap-toggle"> Wrap long lines</label>
+  <label class="wrap-toggle"><input type="checkbox" id="hide-reviewed-toggle"> <span id="hide-reviewed-label">Hide reviewed</span></label>
+  <button type="button" id="help-toggle" class="help-toggle" aria-haspopup="dialog" aria-controls="help-dialog" aria-expanded="false">How this works</button>
   <span class="conn" id="conn">Connecting…</span>
 </div>
+{HELP_DIALOG}
 <main class="wrap">
   <h1>{e(packet.title)}</h1>
   <section class="intro">{md(packet.intro)}{links}
@@ -198,7 +242,7 @@ def packet_page(pid: str, packet: Packet) -> str:
   <section class="evidence">{md(packet.appendix) if packet.appendix else ""}</section>
 </main>
 <script src="/static/page.js"></script>'''
-    return _shell(packet.title, body, f' data-page="packet" data-pid="{e(pid)}"')
+    return _shell(packet.title, body, f' data-page="packet" data-pid="{e(pid)}" data-layout-version="{e(layout)}"')
 
 
 def error_page(title: str, message: str) -> str:

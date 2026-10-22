@@ -5,6 +5,17 @@
 
   if (document.body.dataset.page === "index") {
     for (const t of document.querySelectorAll("time[data-iso]")) if (t.dataset.iso !== "never") t.textContent = fmt(t.dataset.iso);
+    // "Show packets with nothing pending": a per-viewer preference (localStorage), off by default.
+    const doneToggle = document.getElementById("done-toggle");
+    if (doneToggle) {
+      const DONE_KEY = "review-desk:show-done";
+      const applyDone = on => { doneToggle.checked = on; document.body.classList.toggle("show-done", on); };
+      try { applyDone(localStorage.getItem(DONE_KEY) === "1"); } catch { applyDone(false); }
+      doneToggle.addEventListener("change", () => {
+        applyDone(doneToggle.checked);
+        try { localStorage.setItem(DONE_KEY, doneToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
+      });
+    }
     return;
   }
   if (document.body.dataset.page !== "packet") return;
@@ -19,6 +30,27 @@
     applyWrap(wrapToggle.checked);
     try { localStorage.setItem(WRAP_KEY, wrapToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
   });
+
+  // "Hide reviewed": same idea. Approved and dropped cards hide; a card decided in this page view (.just-decided) stays
+  // until the toggle changes, so a mis-click doesn't make the item vanish before it can be undone.
+  const hideToggle = document.getElementById("hide-reviewed-toggle");
+  const HIDE_KEY = "review-desk:hide-reviewed";
+  const applyHide = on => { hideToggle.checked = on; document.body.classList.toggle("hide-reviewed", on); };
+  try { applyHide(localStorage.getItem(HIDE_KEY) === "1"); } catch { applyHide(false); }
+  hideToggle.addEventListener("change", () => {
+    applyHide(hideToggle.checked);
+    for (const c of document.querySelectorAll(".just-decided")) c.classList.remove("just-decided");
+    try { localStorage.setItem(HIDE_KEY, hideToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
+  });
+
+  // Instructions: a native modal <dialog>. The bar button toggles it; Esc, Close and a click on the backdrop dismiss it.
+  const helpToggle = document.getElementById("help-toggle");
+  const helpDialog = document.getElementById("help-dialog");
+  helpToggle.addEventListener("click", () => {
+    if (helpDialog.open) helpDialog.close(); else { helpDialog.showModal(); helpToggle.setAttribute("aria-expanded", "true"); }
+  });
+  helpDialog.addEventListener("close", () => { helpToggle.setAttribute("aria-expanded", "false"); helpToggle.focus(); });
+  helpDialog.addEventListener("click", ev => { if (ev.target === helpDialog) helpDialog.close(); });
 
   const pid = document.body.dataset.pid;
   const api = `/api/p/${pid}`;
@@ -49,6 +81,8 @@
     document.getElementById("n-revise").textContent = counts.revise + " to revise";
     document.getElementById("n-drop").textContent = counts.drop + " dropped";
     document.getElementById("n-open").textContent = counts.open + " not reviewed";
+    const reviewed = counts.approve + counts.drop;
+    document.getElementById("hide-reviewed-label").textContent = reviewed ? `Hide reviewed (${reviewed})` : "Hide reviewed";
   }
 
   function setConn(ok, text) {
@@ -62,6 +96,7 @@
 
   function put(id, patch) {
     if (!connected) return;
+    if ("decision" in patch) cards.find(c => c.dataset.id === id).classList.add("just-decided");
     const before = state[id];
     state[id] = { ...(state[id] || {}), ...patch };
     render();
@@ -102,10 +137,37 @@
     });
   }
 
+  // Live drafts: when an agent edits a draft file, swap that one draft's body in place. Nothing else on the page is
+  // touched (notes being typed, open drafts, scroll position, the help dialog), so there is never a reload.
+  let draftsBusy = false;
+  async function refreshDrafts() {
+    if (draftsBusy) return;
+    draftsBusy = true;
+    try {
+      const r = await fetch(`${api}/drafts`, { cache: "no-store" });
+      if (!r.ok) return;
+      // The manifest (items, titles, facts) changed: offer a reload rather than doing one, which would lose open drafts.
+      const layout = r.headers.get("X-Layout-Version");
+      if (layout && layout !== document.body.dataset.layoutVersion) document.getElementById("layout-changed").hidden = false;
+      const versions = await r.json();
+      for (const card of cards) {
+        const id = card.dataset.id;
+        if (!versions[id] || versions[id] === card.dataset.draftVersion) continue;
+        const f = await fetch(`${api}/drafts/${id}`, { cache: "no-store" });
+        if (!f.ok) continue;
+        const d = await f.json();
+        card.querySelector(".draft-body").innerHTML = d.html;
+        card.dataset.draftVersion = d.version;
+        card.querySelector("[data-draft-updated]").textContent = "Draft updated " + new Date().toLocaleTimeString();
+      }
+    } catch { /* the next tick tries again; connectivity is shown by refresh() */ }
+    finally { draftsBusy = false; }
+  }
+
   function refresh(first) {
     return fetch(`${api}/state`, { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(s => { state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); })
+      .then(s => { state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); })
       .catch(() => setConn(false, "Not connected"));
   }
 

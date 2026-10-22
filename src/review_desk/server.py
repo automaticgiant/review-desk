@@ -6,6 +6,9 @@ Routes (anything else is 404):
   GET /p/<pid>/raw/<item_id>             an item's draft file as text/plain (only files the manifest names)
   GET /api/health                        {"app": "review-desk"}
   GET /api/p/<pid>/state                 the packet's review-decisions.json
+  GET /api/p/<pid>/drafts                {item_id: version} for every item's rendered draft (the page polls this);
+                                         X-Layout-Version says whether the manifest-derived page changed
+  GET /api/p/<pid>/drafts/<item_id>      {version, html}: one rendered draft, so the page can swap it in place
   PUT /api/p/<pid>/items/<item_id>       merge {"decision"?, "note"?} into one item
   GET /static/page.css|page.js
 
@@ -44,6 +47,8 @@ ROUTES_GET = [
     (re.compile(rf"^/p/{SEG}/raw/{SEG}$"), "raw"),
     (re.compile(r"^/api/health$"), "health"),
     (re.compile(rf"^/api/p/{SEG}/state$"), "state"),
+    (re.compile(rf"^/api/p/{SEG}/drafts$"), "drafts"),
+    (re.compile(rf"^/api/p/{SEG}/drafts/{SEG}$"), "draft"),
     (re.compile(r"^/static/(page\.css|page\.js)$"), "static"),
     (re.compile(r"^/favicon\.ico$"), "favicon"),
 ]
@@ -63,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
     timeout = 15  # per-connection socket timeout: a stalled client can't hold a thread forever
 
     # ---- plumbing -------------------------------------------------------------------------------
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, headers=None):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -74,12 +79,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _json(self, code, obj):
-        self._send(code, json.dumps(obj), "application/json")
+    def _json(self, code, obj, headers=None):
+        self._send(code, json.dumps(obj), "application/json", headers)
 
     def _err(self, code, msg):
         if self.path.startswith("/api/"):
@@ -170,6 +177,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, dec.read(p.dir))
         except dec.DecisionsError as e:
             raise HttpError(500, str(e))
+
+    def _get_drafts(self, pid):
+        p = self._packet(pid)
+        self._json(200, {it.id: render.draft_version(render.draft_html(p, it)) for it in p.items},
+                   {"X-Layout-Version": render.layout_version(pid, p)})
+
+    def _get_draft(self, pid, item_id):
+        p = self._packet(pid)
+        item = p.item(item_id)
+        if item is None:
+            raise HttpError(404, "unknown item")
+        html = render.draft_html(p, item)
+        self._json(200, {"version": render.draft_version(html), "html": html})
 
     def _get_favicon(self):
         self._send(204, b"", "image/x-icon")
