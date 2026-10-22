@@ -9,9 +9,10 @@ MAX_HISTORY per item). When one write moves an item off "revise" and clears its 
 revising), the old note is archived there first, so the page can show what prompted the revision. Editing or deleting a
 note on its own never archives.
 
-A patch may carry "ifDecision": the write applies only while the item's decision is still that value, otherwise
-ConflictError and nothing changes. It is a guard, never stored. The agent's clear uses it so it can't wipe a decision
-the human made after the revised draft appeared.
+A patch may carry guards, "ifDecision" and/or "ifNote": the write applies only while the item's decision (note) is
+still that value, otherwise ConflictError and nothing changes. Guards are never stored. The agent's clear uses both, so
+it can't wipe a decision the human made, or a note the human added to, after the agent read the item. An archived
+entry's "at" is when that note was written (the old record's updatedAt), i.e. when the revision was requested.
 """
 from __future__ import annotations
 
@@ -69,13 +70,15 @@ def _read_object(p: Path) -> dict:
 def validate_patch(patch) -> dict:
     if not isinstance(patch, dict) or not patch:
         raise DecisionsError("expected a JSON object with 'decision' and/or 'note'")
-    extra = set(patch) - {"decision", "note", "ifDecision"}
+    extra = set(patch) - {"decision", "note", "ifDecision", "ifNote"}
     if extra:
         raise DecisionsError(f"unknown field(s): {', '.join(sorted(extra))}")
     if not ({"decision", "note"} & set(patch)):
         raise DecisionsError("expected 'decision' and/or 'note' (ifDecision only guards one of them)")
     if "ifDecision" in patch and patch["ifDecision"] not in VALID:
         raise DecisionsError("ifDecision must be one of approve, revise, drop or ''")
+    if "ifNote" in patch and not isinstance(patch["ifNote"], str):
+        raise DecisionsError("ifNote must be a string")
     if "decision" in patch and patch["decision"] not in VALID:
         raise DecisionsError("decision must be one of approve, revise, drop or '' (clear)")
     if "note" in patch and (not isinstance(patch["note"], str) or len(patch["note"]) > MAX_NOTE):
@@ -92,17 +95,17 @@ def merge_item(packet_dir, item_id: str, patch: dict) -> dict:
     with _lock:
         state = read(packet_dir)
         old = state.get(item_id) or {}
-        guard = patch.get("ifDecision")
-        if guard is not None and (old.get("decision") or "") != guard:
-            raise ConflictError(f"decision is {(old.get('decision') or '')!r}, not {guard!r}; nothing changed")
+        for key, field in (("ifDecision", "decision"), ("ifNote", "note")):
+            if key in patch and (old.get(field) or "") != patch[key]:
+                raise ConflictError(f"{field} is no longer {patch[key]!r}; nothing changed")
         rec = dict(old)
         rec.setdefault("decision", "")
         rec.setdefault("note", "")
-        rec.update({k: v for k, v in patch.items() if k != "ifDecision"})
+        rec.update({k: v for k, v in patch.items() if not k.startswith("if")})
         rec["updatedAt"] = now_iso()
         left_revise = "decision" in patch and rec["decision"] != "revise"
         if left_revise and old.get("decision") == "revise" and str(old.get("note") or "").strip() and not rec["note"].strip():
-            _archive(packet_dir, item_id, old["note"], rec["updatedAt"])
+            _archive(packet_dir, item_id, old["note"], old.get("updatedAt") or rec["updatedAt"])
         state[item_id] = rec
         atomic_write_json(path_for(packet_dir), state)
         return rec

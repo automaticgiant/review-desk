@@ -133,8 +133,11 @@ scroll sideways; tick **Wrap long lines** in the top bar to wrap them instead (a
      alt="One card, approved, with its draft expanded: a heading, a proposal as a bulleted list with a nested list, a code block whose long line wraps, and numbered acceptance criteria.">
 
 **Working on the page itself:** every desk swaps changed `static/page.css` and `static/page.js` into open pages within a
-few seconds, without a reload, so notes you're typing, open drafts and your scroll position survive. Python changes still
-need a desk restart.
+few seconds, without a reload, so notes you're typing, open drafts and your scroll position survive. Python changes need
+the desk restarted; `review-desk serve --reload` does that for you when a `.py` file in the package changes (set
+`REVIEW_DESK_RELOAD=1` to have the desk that `open` starts do the same). It restarts the desk, not the supervisor, so
+edits to `cli.py` or `reload.py` need `serve --reload` restarted by hand. A desk that is already running is never
+replaced: stop it first, or `--reload` is ignored (the command says so).
 
 **Decisions** live beside the manifest in `review-decisions.json`:
 
@@ -156,7 +159,7 @@ existing decisions files keep working. Ids that leave the manifest keep their re
    printed). Don't ask for the decisions in chat; move on.
 3. **Later, in any session: `review-desk status <dir> --json`.** Act only on what's there:
    - `approve`: do it (the click is the approval for that item, but follow your project's own rules for logging it);
-   - `revise`: edit the draft per the `note`. The open page swaps the new text in within a few seconds, without a reload. Then clear the mark and note with `PUT {"decision": "", "note": "", "ifDecision": "revise"}` (see the skill; a 409 means the reviewer already decided again, so leave it). The desk keeps the old note in `review-history.json` and shows it on the card under "Earlier notes". Say which items changed; they get re-decided;
+   - `revise`: edit the draft per the `note`. The open page swaps the new text in within a few seconds, without a reload. Then clear the mark and note with `PUT {"decision": "", "note": "", "ifDecision": "revise", "ifNote": "<the note you acted on>"}` (see the skill; a 409 means the reviewer decided again or added to the note, so leave it). The desk keeps the old note in `review-history.json` and shows it on the card under "Earlier notes". Say which items changed; they get re-decided;
    - `drop`: don't do it; leave the file;
    - `undecided`: leave it alone; it's still waiting.
 4. Never write `review-decisions.json` yourself. Decisions are the reviewer's. (The desk's PUT API exists for the page.)

@@ -567,9 +567,42 @@ def test_a_replaced_script_stops_touching_the_page(desk):
     for fn in ("function render()", "function setConn("):
         assert "if (dead) return;" in js.split(fn, 1)[1].split("\n", 3)[1] + js.split(fn, 1)[1].split("\n", 3)[2]
     assert "const d = card.dataset.decision;" in js and "state[card.dataset.id]?.decision" not in js
-    assert "if (!r.ok || dead) return;" in js and "if (dead) return; state = s" in js
+    assert "if (!r.ok || dead) return;" in js and "if (dead || w !== writes) return; state = s" in js
 
 
 def test_a_changed_script_is_loaded_once_per_change(desk):
     js = desk.get("/static/page.js")[2].decode()
     assert "{ staticVersion.js = js; return loadScript(js); }" in js
+
+
+def test_put_if_note_conflict_is_409(desk):
+    desk.put_item(desk.pid, "first-draft", {"decision": "revise", "note": "fix A, and also B"})
+    st, _, body = desk.put_item(desk.pid, "first-draft", {"decision": "", "note": "", "ifDecision": "revise", "ifNote": "fix A"})
+    assert st == 409 and b"note" in body
+    assert json.loads(desk.get(f"/api/p/{desk.pid}/state")[2])["first-draft"]["note"] == "fix A, and also B"
+
+
+# ---- second review: poll responses vs saves, hiding while typing ----------------------------------
+
+def test_a_poll_that_raced_a_save_is_discarded(desk):
+    """A /state response that was in flight while a save started or finished is older than the page; applying it would
+    put stale text back in the note field (a lost keystroke)."""
+    js = desk.get("/static/page.js")[2].decode()
+    assert js.count("writes++") == 3  # at the start of a save and when it succeeds or fails
+    refresh = js.split("function refresh(first)", 1)[1].split("\n  }\n", 1)[0]
+    assert "const w = writes;" in refresh and "w !== writes" in refresh
+
+
+def test_hide_reviewed_waits_while_a_note_is_being_typed(desk):
+    js = desk.get("/static/page.js")[2].decode()
+    timer = js.split("function scheduleHide(card)", 1)[1].split("listen(hideToggle", 1)[0]
+    assert "document.activeElement === note || note.dataset.dirty" in timer and "return scheduleHide(card)" in timer
+    # but a focused Approve button must not hold the card back, or clicking with the mouse would never hide it
+    assert "card.contains(document.activeElement)" not in timer
+
+
+def test_help_text_matches_the_agent_clearing_the_mark(desk):
+    body = desk.get(f"/p/{desk.pid}/")[2].decode()
+    assert "until you decide again, or the agent has revised" in body and "Not reviewed" in body.split("<dt>Revise</dt>", 1)[1].split("<dt>Drop</dt>", 1)[0]
+    js = desk.get("/static/page.js")[2].decode()
+    assert "serve --dev" not in js

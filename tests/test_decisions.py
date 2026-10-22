@@ -178,3 +178,32 @@ def test_if_decision_must_come_with_a_change_and_be_valid(packet, patch):
 
 def test_history_missing_is_empty(packet):
     assert read_history(packet) == {}
+
+
+# ---- second review: guard the note too, and stamp the request time ------------------------------------
+
+def test_if_note_guards_the_text_the_agent_acted_on(packet):
+    merge_item(packet, "first-draft", {"decision": "revise", "note": "fix A"})
+    merge_item(packet, "first-draft", {"note": "fix A, and also B"})  # the human added to it after the agent read it
+    before = (packet / "review-decisions.json").read_bytes()
+    with pytest.raises(ConflictError):
+        merge_item(packet, "first-draft", {"decision": "", "note": "", "ifDecision": "revise", "ifNote": "fix A"})
+    assert (packet / "review-decisions.json").read_bytes() == before and not (packet / "review-history.json").exists()
+    rec = merge_item(packet, "first-draft", {"decision": "", "note": "", "ifDecision": "revise", "ifNote": "fix A, and also B"})
+    assert rec["note"] == "" and set(rec) == {"decision", "note", "updatedAt"}  # guards are never stored
+
+
+@pytest.mark.parametrize("patch", [{"note": "x", "ifNote": 5}, {"note": "x", "ifNote": None}])
+def test_if_note_must_be_a_string(packet, patch):
+    with pytest.raises(DecisionsError):
+        merge_item(packet, "first-draft", patch)
+
+
+def test_archived_entry_is_stamped_with_when_the_note_was_written_not_when_it_was_cleared(packet, monkeypatch):
+    from review_desk import decisions
+    stamps = iter(["2026-01-01T00:00:00.000Z", "2026-01-01T00:05:00.000Z"])  # distinct, or the two could tie in a millisecond
+    monkeypatch.setattr(decisions, "now_iso", lambda: next(stamps))
+    merge_item(packet, "first-draft", {"decision": "revise", "note": "shorter"})
+    merge_item(packet, "first-draft", {"decision": "", "note": ""})
+    (entry,) = read_history(packet)["first-draft"]
+    assert entry["at"] == "2026-01-01T00:00:00.000Z"

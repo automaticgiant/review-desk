@@ -186,7 +186,7 @@ HELP_DIALOG = """<dialog id="help-dialog" class="help" aria-labelledby="help-tit
     <dt>Approve</dt><dd>The draft is good as written. The agent may use it.</dd>
     <dt>Revise</dt><dd>Close, but change it. Say what in <em>Notes for the agent</em>. The agent edits the draft file and
       tells you which items changed. The new text appears here on its own within a few seconds, without disturbing
-      your notes or the drafts you have open. The item stays on Revise until you decide again. Once the agent has revised, your note is cleared and kept
+      your notes or the drafts you have open. The item stays on Revise until you decide again, or the agent has revised it and sends it back to Not reviewed. Once the agent has revised, your note is cleared and kept
       under <em>Earlier notes</em> on the card.</dd>
     <dt>Drop</dt><dd>Don't use it.</dd>
     <dt>Clear</dt><dd>Back to not reviewed.</dd>

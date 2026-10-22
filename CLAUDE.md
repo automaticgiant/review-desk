@@ -20,7 +20,7 @@ itself.
 
 - Tests: `uv run --offline pytest -q` (about 1 s). Mutation check: `bin/mutation-check` (about 15 s).
 - CLI: `bin/review-desk ...` (runs `uv run --offline` against this checkout).
-- Live page edits: every desk hot-swaps `static/page.css` and `static/page.js` into open pages within a few seconds, with no reload (notes, open drafts and scroll survive), so there is no flag and no restart for page changes. Python changes still need a restart, and a `page.js` that throws after loading needs a manual page reload.
+- Live page edits: every desk hot-swaps `static/page.css` and `static/page.js` into open pages within a few seconds, with no reload (notes, open drafts and scroll survive), so there is no flag and no restart for page changes. Python changes: run the desk with `serve --reload` (or `REVIEW_DESK_RELOAD=1`) and it restarts itself on any `.py` change in the package; otherwise restart by hand. The supervisor itself isn't reloaded (edits to `cli.py`/`reload.py` restart only the desk). A `page.js` that throws after loading needs a manual page reload. `bin/mutation-check` runs in a temp copy, so it is safe next to a reloading desk.
 - A running desk: `lsof -nP -iTCP:8791 -sTCP:LISTEN`; log `~/.local/state/review-desk/desk-8791.log`. Restart it after
   changing server code: the page and manifest are live, Python code isn't.
 - `bin/export-public <dest> "<Name>" <email>`: export the current tree as a fresh, single-commit repository.
@@ -33,7 +33,7 @@ itself.
 - `decisions.py`: read, validate and merge one item under a lock; `fsutil.atomic_write_json` does the write.
 - `summary.py`: the `status`/`list`/index summaries. `render.py`: HTML; drafts are GitHub-style markdown (markdown-it-py, CommonMark plus tables, strikethrough, linkify), raw HTML off, URL allowlist on every href and src.
 - `server.py`: routes and security checks. `static/page.{css,js}`: the page (served as files so the CSP can forbid inline script).
-- `cli.py`: commands, and `open_browser`. `bin/review-desk`: launcher. `bin/mutation-check`: the can-it-fail check.
+- `cli.py`: commands, and `open_browser`. `reload.py`: the `serve --reload` supervisor. `bin/review-desk`: launcher. `bin/mutation-check`: the can-it-fail check.
 - `skills/review-desk/`: the Claude Code skill for agents using the desk.
 
 ## Gotchas

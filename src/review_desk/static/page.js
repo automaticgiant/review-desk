@@ -1,7 +1,7 @@
 // review-desk page script (served from /static so the CSP can forbid inline script).
 // Packet page: per-item PUTs (merge on the server), debounced notes, tally, and a poll so other tabs' changes show up.
 (() => {
-  // Hot swap (`serve --dev`): a newer copy of this script replaces the running one in place. The old copy detaches
+  // Hot swap: a newer copy of this script replaces the running one in place. The old copy detaches
   // everything it bound and stops polling; the DOM (notes being typed, open drafts, scroll) is left exactly as it is.
   const hot = typeof window.__deskDispose === "function";
   if (hot) window.__deskDispose();
@@ -98,6 +98,10 @@
     hideTimers.set(card, setTimeout(() => {
       const d = card.dataset.decision; // from the DOM, so a copy that replaced this one is respected
       if (!document.body.classList.contains("hide-reviewed") || (d !== "approve" && d !== "drop")) return cancelHide(card);
+      // Not while a note is being typed (focus leaves the page for <body> when the card goes). A focused Approve button
+      // doesn't count: clicking it with the mouse leaves it focused.
+      const note = card.querySelector("[data-note]");
+      if (document.activeElement === note || note.dataset.dirty) return scheduleHide(card);
       hideTimers.delete(card);
       collapse(card);
     }, HIDE_DELAY));
@@ -126,6 +130,7 @@
   const cards = [...document.querySelectorAll(".card")];
   const label = { approve: "Approved", revise: "Revise", drop: "Dropped", "": "Not reviewed" };
   let state = {};
+  let writes = 0; // bumped when a save starts and when it finishes: a poll that overlapped one is older than the page
   const queues = {}; // per-item promise chain keeps one item's writes in order
 
   function render() {
@@ -172,6 +177,7 @@
       scheduleHide(card);
     }
     const before = state[id];
+    writes++;
     state[id] = { ...(state[id] || {}), ...patch };
     render();
     const run = () => fetch(`${api}/items/${id}`, {
@@ -181,6 +187,7 @@
     }).then(async r => {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
       state[id] = await r.json();
+      writes++;
       if ("note" in patch) {
         const field = cards.find(c => c.dataset.id === id).querySelector("[data-note]");
         if (field.value === patch.note) delete field.dataset.dirty; // typed more since this save went out: still unsaved
@@ -189,6 +196,7 @@
       setConn(true, "Saved");
     }).catch(e => {
       // Undo the optimistic change, so nothing looks saved that wasn't.
+      writes++;
       if (before === undefined) delete state[id]; else state[id] = before;
       render();
       setConn(false, `Not saved (${e.message})`);
@@ -270,7 +278,7 @@
       // The manifest (items, titles, facts) changed: offer a reload rather than doing one, which would lose open drafts.
       const layout = r.headers.get("X-Layout-Version");
       if (layout && layout !== document.body.dataset.layoutVersion) document.getElementById("layout-changed").hidden = false;
-      // `serve --dev` only: apply page.css / page.js changes in place, never a reload (that would lose notes, open
+      // apply page.css / page.js changes in place, never a reload (that would lose notes, open
       // drafts and scroll). The stylesheet is swapped; a changed script is loaded and replaces this running copy.
       const sv = r.headers.get("X-Static-Version");
       if (sv) {
@@ -324,9 +332,10 @@
   }
 
   function refresh(first) {
+    const w = writes;
     return fetch(`${api}/state`, { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(s => { if (dead) return; state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); refreshHistory(); })
+      .then(s => { if (dead || w !== writes) return; state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); refreshHistory(); })
       .catch(() => setConn(false, "Not connected")); // setConn ignores a replaced copy
   }
 

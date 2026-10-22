@@ -73,12 +73,13 @@ and only for `revise` items you have just revised (never to approve, drop or dec
 ```sh
 curl -s -X PUT http://127.0.0.1:8791/api/p/<packet-id>/items/<item-id> \
   -H 'X-Review-Desk: 1' -H 'Content-Type: application/json' \
-  -d '{"decision": "", "note": "", "ifDecision": "revise"}'
+  -d '{"decision": "", "note": "", "ifDecision": "revise", "ifNote": "<the note exactly as status returned it>"}'
 ```
 
-`ifDecision` makes the clear conditional: it applies only while the item is still on `revise`. If the human has decided
-again since (say they approved the revised draft with a note), the desk answers 409, changes nothing, and you leave the
-item alone.
+`ifDecision` and `ifNote` make the clear conditional: it applies only while the item is still on `revise` and its note is
+still the text you acted on (copy it from `status --json`, character for character). If the human has decided again since
+(say they approved the revised draft with a note) or added to the note, the desk answers 409, changes nothing, and you
+leave the item alone: it needs a fresh look.
 
 `<packet-id>` is the segment after `/p/` in the packet URL that `review-desk open` prints. Use your `--port` in the URL if the desk
 isn't on 8791. The desk archives the old note itself before clearing it (`review-history.json` beside the manifest) and shows it on
@@ -95,7 +96,7 @@ Don't rename an item's `id` once review has started: its decision becomes an orp
 ## Don't
 
 - Don't edit or create `review-decisions.json` or `review-history.json`. Decisions are the human's.
-- Don't PUT to the desk's API (`/api/p/.../items/...`) on the human's behalf, except `{"decision": "", "note": "", "ifDecision": "revise"}` to clear a revise
+- Don't PUT to the desk's API (`/api/p/.../items/...`) on the human's behalf, except `{"decision": "", "note": "", "ifDecision": "revise", "ifNote": "..."}` to clear a revise
   mark and its note after you have revised that item (above). It exists for the page.
 - Don't treat a pending, dropped or revise-marked item as approved.
 - Don't move or rename a registered packet directory; run `review-desk remove <dir>` and `add` it again if you must.

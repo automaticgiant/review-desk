@@ -47,18 +47,24 @@ def probe(port: int) -> str:
         return "none"
 
 
-def ensure_running(port: int) -> None:
-    """Start `review-desk serve` detached if nothing answers on the port; log to $REVIEW_DESK_STATE/desk-<port>.log."""
+def ensure_running(port: int, reload: bool = False) -> None:
+    """Start `review-desk serve` detached if nothing answers on the port; log to $REVIEW_DESK_STATE/desk-<port>.log.
+    With reload (or REVIEW_DESK_RELOAD=1) the detached desk restarts itself when its Python source changes."""
     state = probe(port)
     if state == "desk":
+        if reload:
+            print(f"review-desk: a desk is already running on port {port}; --reload only applies to a desk this command "
+                  "starts, so stop that one first", file=sys.stderr)
         return
     if state == "other":
         raise CliError(f"port {port} is in use by something that isn't review-desk; pick another with --port")
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     log = open(sd / f"desk-{port}.log", "ab")
-    subprocess.Popen([sys.executable, "-m", "review_desk", "serve", "--port", str(port)],
-                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
+    cmd = [sys.executable, "-m", "review_desk", "serve", "--port", str(port)]
+    if reload or os.environ.get("REVIEW_DESK_RELOAD") == "1":
+        cmd.append("--reload")
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     for _ in range(50):
         time.sleep(0.1)
         if probe(port) == "desk":
@@ -150,11 +156,16 @@ def cmd_new(a, reg: Registry):
 def cmd_serve(a, reg: Registry):
     from .server import make_server
     if a.background:
-        ensure_running(a.port)
+        ensure_running(a.port, reload=a.reload)
         print(base_url(a.port))
         return
     if probe(a.port) != "none":
         raise CliError(f"port {a.port} is already in use")
+    if a.reload:
+        from . import reload as rl
+        print(f"review-desk serving {base_url(a.port)} and restarting on source changes", flush=True)
+        rl.stop_on_sigterm()
+        return rl.supervise(lambda: rl.spawn_desk(a.port), rl.snapshot)
     srv = make_server(a.port, reg)
     print(f"review-desk serving {base_url(a.port)} (registry: {reg.file})", flush=True)
     try:
@@ -199,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve", help="run the desk (127.0.0.1 only); foreground unless --background")
     port_arg(s)
     s.add_argument("--background", action="store_true", help="start detached if not already running, print the URL, exit")
+    s.add_argument("--reload", action="store_true",
+                   help="restart the desk when its Python source changes (page.js/page.css already hot-swap without this); "
+                        "REVIEW_DESK_RELOAD=1 does the same for desks that `open` starts. Edits to cli.py and reload.py "
+                        "restart only the desk, not the supervisor")
     s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("open", help="open the desk or a packet in a browser; starts the desk if needed; "
                                     "registers the packet if it isn't yet")
