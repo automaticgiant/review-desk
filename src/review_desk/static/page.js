@@ -37,8 +37,61 @@
   const HIDE_KEY = "review-desk:hide-reviewed";
   const applyHide = on => { hideToggle.checked = on; document.body.classList.toggle("hide-reviewed", on); };
   try { applyHide(localStorage.getItem(HIDE_KEY) === "1"); } catch { applyHide(false); }
+  // With the toggle on, a card marked approved or dropped fades out HIDE_DELAY ms later. Deciding again before then
+  // (an undo, or a switch to revise) cancels it.
+  const HIDE_DELAY = 3000, FADE_MS = 450;
+  const hideTimers = new Map();
+  const resetCard = card => {
+    card.classList.remove("fading");
+    for (const p of ["height", "padding-top", "padding-bottom", "border-width", "margin-bottom", "overflow"]) card.style.removeProperty(p);
+  };
+  const cancelHide = card => {
+    clearTimeout(hideTimers.get(card));
+    hideTimers.delete(card);
+    resetCard(card);
+  };
+  // The card fades and collapses (height, padding, border and the grid gap all animate to 0), so what follows slides up
+  // instead of jumping. Meanwhile the first card still in view is held at the same screen position by scrolling the
+  // difference away each frame: whatever you're looking at stays put, even when the hiding card is above it.
+  function collapse(card) {
+    const anchor = cards.find(c => c !== card && c.offsetParent && c.getBoundingClientRect().bottom > 0);
+    let last = anchor && anchor.getBoundingClientRect().top;
+    const keep = () => {
+      if (!anchor) return;
+      const top = anchor.getBoundingClientRect().top;
+      if (top !== last) window.scrollBy({ top: top - last, behavior: "instant" });
+      last = anchor.getBoundingClientRect().top;
+    };
+    card.style.height = card.offsetHeight + "px";
+    card.style.overflow = "hidden";
+    card.classList.add("fading");
+    void card.offsetHeight; // commit the explicit height so the transition has a start value
+    for (const p of ["height", "padding-top", "padding-bottom", "border-width"]) card.style.setProperty(p, "0");
+    card.style.marginBottom = "-16px"; // the .wrap grid gap
+    const start = performance.now();
+    const tick = now => {
+      keep();
+      if (now - start < FADE_MS + 50) return requestAnimationFrame(tick);
+      card.classList.remove("just-decided"); // display: none now
+      resetCard(card);
+      hideTimers.delete(card);
+      keep();
+    };
+    requestAnimationFrame(tick);
+  }
+  function scheduleHide(card) {
+    cancelHide(card);
+    if (!document.body.classList.contains("hide-reviewed")) return;
+    hideTimers.set(card, setTimeout(() => {
+      const d = state[card.dataset.id]?.decision;
+      if (!document.body.classList.contains("hide-reviewed") || (d !== "approve" && d !== "drop")) return cancelHide(card);
+      hideTimers.delete(card);
+      collapse(card);
+    }, HIDE_DELAY));
+  }
   hideToggle.addEventListener("change", () => {
     applyHide(hideToggle.checked);
+    for (const c of [...hideTimers.keys()]) cancelHide(c);
     for (const c of document.querySelectorAll(".just-decided")) c.classList.remove("just-decided");
     try { localStorage.setItem(HIDE_KEY, hideToggle.checked ? "1" : "0"); } catch { /* not persisted */ }
   });
@@ -96,7 +149,11 @@
 
   function put(id, patch) {
     if (!connected) return;
-    if ("decision" in patch) cards.find(c => c.dataset.id === id).classList.add("just-decided");
+    if ("decision" in patch) {
+      const card = cards.find(c => c.dataset.id === id);
+      card.classList.add("just-decided");
+      scheduleHide(card);
+    }
     const before = state[id];
     state[id] = { ...(state[id] || {}), ...patch };
     render();

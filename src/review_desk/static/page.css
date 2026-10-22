@@ -68,9 +68,12 @@ pre { overflow-x: auto; background: var(--bg); padding: 8px; border-radius: 6px;
 /* "Wrap long lines" (bar toggle, per viewer): code wraps instead of scrolling sideways; tables still scroll. */
 body.wrap-lines pre, body.wrap-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* "Hide reviewed" (bar toggle, per viewer): approved and dropped cards go; revise stays, it still needs a decision.
-   A card decided during this page view stays until the toggle changes, so a mis-click can be undone. */
+   A card decided during this page view stays for a few seconds (so a mis-click can be undone), then fades out. */
 body.hide-reviewed .card:not(.just-decided)[data-decision="approve"],
 body.hide-reviewed .card:not(.just-decided)[data-decision="drop"] { display: none; }
+body { overflow-anchor: none; } /* page.js holds the viewed card in place itself while a card collapses */
+.card.fading { opacity: 0; transition: opacity 0.3s ease, height 0.45s ease, padding 0.45s ease, border-width 0.45s ease, margin 0.45s ease; }
+@media (prefers-reduced-motion: reduce) { .card.fading { transition: none; } }
 .notice { position: fixed; bottom: 16px; left: 16px; right: 16px; max-width: 560px; margin: 0 auto; z-index: 9; border-radius: 8px;
   background: var(--accent); color: var(--surface); padding: 10px 16px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.3); }
 .notice[hidden] { display: none; }
