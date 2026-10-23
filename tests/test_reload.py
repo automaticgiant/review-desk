@@ -157,7 +157,7 @@ def test_background_reload_and_the_env_switch_start_the_detached_desk_with_reloa
 
 def test_serve_background_passes_reload_to_the_launcher(monkeypatch, state_dir, capsys):
     seen = []
-    monkeypatch.setattr(cli, "ensure_running", lambda port, reload=False: seen.append(reload))
+    monkeypatch.setattr(cli, "ensure_running", lambda port, reload=False, share=False, mdns=False: seen.append(reload))
     assert cli.main(["serve", "--background", "--reload", "--port", "1234"]) == 0
     assert cli.main(["serve", "--background", "--port", "1234"]) == 0
     assert seen == [True, False]
@@ -209,3 +209,11 @@ def test_mutation_check_runs_in_a_copy_without_the_venv():
     text = (Path(__file__).resolve().parent.parent / "bin" / "mutation-check").read_text()
     assert "shutil.copytree(SRC, R" in text and '".venv"' in text and "R = _tmp" in text
     assert "R = pathlib.Path(__file__)" not in text
+
+
+def test_mutation_check_can_show_progress_in_a_bar_and_filter_by_name():
+    """A long run has to be watchable in a 10-line shell view: --bar replaces the per-mutant lines with one progress line."""
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "bin" / "mutation-check").read_text()
+    assert '"--bar" in sys.argv' in text and '"--only" in sys.argv' in text
+    assert "elapsed, ~" in text and "survivors {len(survivors)}" in text and 'print(f"SURVIVED  {name}", flush=True)' in text

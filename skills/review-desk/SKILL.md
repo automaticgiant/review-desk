@@ -5,7 +5,7 @@ description: Use when a batch of drafts needs a human's approval (ticket drafts,
 
 # review-desk
 
-review-desk is a local, loopback-only approval desk. You write drafts into a **review packet** (a directory with a
+review-desk is a local approval desk, loopback-only unless the human opts in to sharing on their network (below). You write drafts into a **review packet** (a directory with a
 `review.toml` manifest and markdown files), the human marks each item **approve**, **revise** or **drop** with a note in
 the browser, and the decisions are saved to `review-decisions.json` beside the manifest. You read them back, in this
 session or a later one, and act on them.
@@ -20,6 +20,7 @@ Needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or later.
 ```sh
 git clone https://github.com/ddl-h-morgan/review-desk.git review-desk
 cd review-desk && uv sync
+uv run --script bin/review-desk --help                    # once, with network: builds the launcher's cached environment
 ln -s "$PWD/bin/review-desk" ~/.local/bin/review-desk     # or: alias review-desk="$PWD/bin/review-desk"
 ```
 
@@ -86,6 +87,34 @@ isn't on 8791. The desk archives the old note itself before clearing it (`review
 the card under "Earlier notes", so the human still sees what they asked for. Don't write that file. Check with `review-desk status <dir> --json`
 that the item now shows `decision: null` and an empty `note`.
 
+## Sharing with the local network (only if the human asks)
+
+The desk is loopback-only. If the human wants to review from another device (phone, laptop), the desk must have been
+started with `--share` (or `REVIEW_DESK_SHARE=1`). A desk that is already running is never switched over: say so, and ask
+the human to stop it (find it with `lsof -nP -iTCP:8791 -sTCP:LISTEN`, then `kill <pid>`; use the desk's port) before you
+start one with `review-desk serve --background --share`. Share mode alone exposes
+nothing; the network can reach the desk only while a 4-hour share window is open:
+
+```sh
+review-desk share status --json   # enabled? active? remaining seconds, and the URLs to give the human
+review-desk share on              # open a 4-hour window, or reset a running one to a full 4 hours (bump)
+review-desk share off             # close it
+```
+
+Only do this when the human asked for it, and close the window when they say they're done (it also ends by itself after
+4 hours or when the desk restarts). `share on` and `share off` fail with a message if the desk isn't in share mode.
+Pass on the URLs from `status` (IP URLs, plus a `.local` one only if the desk was started with `--share-mdns`); the human can also hover the page's Share button to see them.
+Anyone on the network can then read the packets and record decisions, so mention that.
+
+## What the human sees of your changes
+
+The desk records changes made outside the page and shows the newest on each card ("Last changed ..."), with the full list
+in a tooltip: when you edit a draft file or the item's entry in `review.toml`, and when you write a decision or note
+through the API (your revise-clear is shown as "Decision set by an agent" and "Note changed by an agent", without the
+note text). This is automatic, so there is nothing for you to call. It does mean the human can see exactly when you
+revised something, so edit the draft once, deliberately, rather than saving it repeatedly. The page marks its own writes
+with `X-Review-Page: 1`; never send that header, so your writes stay labelled as yours.
+
 ## Packet format
 
 See the review-desk README, "Packet format", for every manifest field (`title`, `intro`, `links`, `appendix`, and per
@@ -95,8 +124,9 @@ Don't rename an item's `id` once review has started: its decision becomes an orp
 
 ## Don't
 
-- Don't edit or create `review-decisions.json` or `review-history.json`. Decisions are the human's.
+- Don't edit or create `review-decisions.json`, `review-history.json` or `review-changes.json`. Decisions are the human's.
 - Don't PUT to the desk's API (`/api/p/.../items/...`) on the human's behalf, except `{"decision": "", "note": "", "ifDecision": "revise", "ifNote": "..."}` to clear a revise
   mark and its note after you have revised that item (above). It exists for the page.
 - Don't treat a pending, dropped or revise-marked item as approved.
+- Don't open a share window on your own initiative, and don't leave one open after the human is done.
 - Don't move or rename a registered packet directory; run `review-desk remove <dir>` and `add` it again if you must.

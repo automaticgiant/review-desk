@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Mutation check: break each security/merge rule in turn and confirm the suite goes red.
-Usage: bin/mutation-check   (from anywhere; needs a clean, green baseline)
+Usage: bin/mutation-check [--bar] [--only TEXT]   (from anywhere; needs a clean, green baseline)
+  --bar        one progress line per mutant instead of one result line each: a bar, counts, elapsed time and an estimate of
+               what is left (survivors are still named in full, at once). Fits a 10-line shell view.
+  --only TEXT  run just the mutants whose name contains TEXT (a quick check of one area)
 
 Runs in a temporary copy of the repo, never in place: a desk started with --reload (or REVIEW_DESK_RELOAD=1) from this
 checkout would otherwise load the mutants, and git status would show them mid-run. The copy leaves out .venv (its editable
 install points back at the real source, so the mutants would never reach the tests) and is deleted afterwards."""
-import atexit, os, shutil, signal, subprocess, pathlib, tempfile
+import atexit, os, shutil, signal, subprocess, sys, pathlib, tempfile, time
 SRC = pathlib.Path(__file__).resolve().parent.parent
 _tmp = pathlib.Path(tempfile.mkdtemp(prefix="mutation-check-"))
 atexit.register(shutil.rmtree, _tmp, True)  # also on an assertion or Ctrl-C
@@ -51,7 +54,7 @@ MUTANTS = [
  ("static version header dropped", S+"server.py", ', "X-Static-Version": static_version()}', '}'),
  ("static version ignores page.js", S+"server.py", 'return f"{h(\'page.css\')}.{h(\'page.js\')}"', 'return f"{h(\'page.css\')}.0"'),
  ("old script keeps its listeners", S+"static/page.js", '{ ...opts, signal: ac.signal }', 'opts'),
- ("old script keeps polling", S+"static/page.js", 'window.__deskDispose = () => { dead = true; ac.abort(); clearInterval(poll); };', 'window.__deskDispose = () => { dead = true; ac.abort(); };'),
+ ("old script keeps polling", S+"static/page.js", 'window.__deskDispose = () => { dead = true; ac.abort(); clearInterval(poll); shareTimers.forEach(clearInterval); };', 'window.__deskDispose = () => { dead = true; ac.abort(); shareTimers.forEach(clearInterval); };'),
  ("hot swap disables fields", S+"static/page.js", 'let connected = hot;', 'let connected = false;'),
  ("js change not applied", S+"static/page.js", 'return loadScript(js);', 'staticVersion.js = js;'),
  ("ifDecision guard ignored", S+"decisions.py", 'if key in patch and (old.get(field) or "") != patch[key]:', 'if False:'),
@@ -76,9 +79,9 @@ MUTANTS = [
  ("static files restart the desk", "src/review_desk/reload.py", 'rglob("*.py")', 'rglob("*")'),
  ("stubborn child not killed", "src/review_desk/reload.py", 'except subprocess.TimeoutExpired:\n        child.kill()', 'except subprocess.TimeoutExpired:\n        pass'),
  ("vanishing file breaks the scan", "src/review_desk/reload.py", 'except FileNotFoundError:\n            continue', 'except ZeroDivisionError:\n            continue'),
- ("reloading child reloads too", "src/review_desk/reload.py", '"serve", "--port", str(port)])', '"serve", "--port", str(port), "--reload"])'),
+ ("reloading child reloads too", "src/review_desk/reload.py", '"serve", "--port", str(port)]\n', '"serve", "--port", str(port), "--reload"]\n'),
  ("reload env switch ignored", S+"cli.py", 'or os.environ.get("REVIEW_DESK_RELOAD") == "1"', 'or False'),
- ("background drops --reload", S+"cli.py", 'ensure_running(a.port, reload=a.reload)', 'ensure_running(a.port)'),
+ ("background drops --reload", S+"cli.py", 'ensure_running(a.port, reload=a.reload, share=a.share, mdns=a.share_mdns)', 'ensure_running(a.port, share=a.share, mdns=a.share_mdns)'),
  ("supervisor output not flushed", "src/review_desk/reload.py", 'print(msg, flush=True)', 'print(msg)'),
  ("sigterm orphans the desk", "src/review_desk/reload.py", '        raise KeyboardInterrupt\n    signal.signal', '        return\n    signal.signal'),
  ("sigterm handler not installed", S+"cli.py", '        rl.stop_on_sigterm()\n', ''),
@@ -90,17 +93,141 @@ MUTANTS = [
  ("temp not cleaned", S+"fsutil.py", '        try:\n            os.unlink(tmp)', '        try:\n            pass'),
  ("cleared counts as decided", S+"summary.py", 'd = rec.get("decision") or None', 'd = rec.get("decision")'),
  ("orphans hidden", S+"summary.py", '"orphans": sorted(k for k in state if k not in ids)', '"orphans": []'),
- ("bind all interfaces", S+"server.py", 'super().__init__(("127.0.0.1", port), Handler)', 'super().__init__(("0.0.0.0", port), Handler)'),
+ ("bind all interfaces", S+"share.py", 'return "0.0.0.0" if share else "127.0.0.1"', 'return "0.0.0.0"'),
+ ("share binds loopback", S+"share.py", 'return "0.0.0.0" if share else "127.0.0.1"', 'return "127.0.0.1"'),
+ ("dispatch peer check off", S+"server.py", 'if not sharing.is_loopback(ip) and not self.server.share.admits(ip, self._local_ip()):', 'if False:'),
+ ("accept-time peer gate off", S+"server.py", 'if lan and not self.share.admits(ip, local):', 'if False:'),
+ ("closed window admits peers", S+"share.py", 'return self.active() and is_lan(peer_ip) and local_ip in self._ips', 'return is_lan(peer_ip) and local_ip in self._ips'),
+ ("public peers admitted", S+"share.py", 'return self.active() and is_lan(peer_ip) and local_ip in self._ips', 'return self.active() and local_ip in self._ips'),
+ ("window not tied to addresses", S+"share.py", 'return self.active() and is_lan(peer_ip) and local_ip in self._ips', 'return self.active() and is_lan(peer_ip)'),
+ ("reopen keeps the old addresses", S+"share.py", 'self._ips = frozenset(ip for _, ip in found)', 'self._ips = self._ips | frozenset(ip for _, ip in found)'),
+ ("sleep does not end the window", S+"share.py", 'if wall_elapsed - mono_elapsed > SLEEP_SLACK:', 'if False:'),
+ ("loopback peers may use the lan and mdns hosts", S+"server.py", 'if share.enabled and not sharing.is_loopback(self.client_address[0]):', 'if share.enabled:'),
+ ("connection caps off", S+"server.py", 'if held_by_lan >= MAX_LAN_CONNECTIONS if lan else len(self._conns) - held_by_lan >= MAX_LOOPBACK_CONNECTIONS:', 'if False:'),
+ ("lan connection cap off", S+"server.py", 'if held_by_lan >= MAX_LAN_CONNECTIONS if lan else', 'if False if lan else'),
+ ("loopback connection cap off", S+"server.py", 'else len(self._conns) - held_by_lan >= MAX_LOOPBACK_CONNECTIONS:', 'else False:'),
+ ("lan peers share the owner's pool", S+"server.py", 'if held_by_lan >= MAX_LAN_CONNECTIONS if lan else len(self._conns) - held_by_lan >= MAX_LOOPBACK_CONNECTIONS:', 'if len(self._conns) >= MAX_LOOPBACK_CONNECTIONS:'),
+ ("connection slots never released", S+"server.py", '            self._conns.pop(id(request), None)\n', '            pass\n'),
+ ("request deadline off", S+"server.py", '        timer.daemon = True\n        timer.start()\n', '        timer.daemon = True\n'),
+ ("lan check admits documentation ranges", S+"share.py", 'return any(a in n for n in LAN_NETS)', 'return a.is_private and not a.is_loopback'),
+ ("window ignores expiry", S+"share.py", 'return max(0.0, self._until - self._clock())', 'return 10**9'),
+ ("window not four hours", S+"share.py", 'SHARE_SECONDS = 4 * 3600', 'SHARE_SECONDS = 3 * 3600'),
+ ("bump threshold off by a minute", S+"share.py", 'BUMP_BELOW = SHARE_SECONDS - 60', 'BUMP_BELOW = SHARE_SECONDS - 120'),
+ ("toggle never ends sharing", S+"share.py", 'if self.remaining() >= BUMP_BELOW:', 'if False:'),
+ ("toggle never bumps", S+"share.py", 'if self.remaining() >= BUMP_BELOW:', 'if self.remaining() > 0:'),
+ ("disabled share opens", S+"share.py", '        if not self.enabled:\n            raise ValueError("sharing is not enabled")\n', ''),
+ ("disabled share reads as active", S+"share.py", '        if not self.enabled or self._until is None:', '        if self._until is None:'),
+ ("control open to any peer", S+"server.py", 'return (self.server.share.enabled and sharing.is_loopback(self.client_address[0])\n                and len(hosts) == 1', 'return (self.server.share.enabled\n                and len(hosts) == 1'),
+ ("control allowed when share is off", S+"server.py", 'return (self.server.share.enabled and sharing.is_loopback', 'return (True and sharing.is_loopback'),
+ ("share host names unchecked", S+"server.py", 'hosts.add(f"{self._local_ip()}:{self.port}")', 'hosts.add(self.headers.get("Host", ""))'),
+ ("mdns name looked up without share mode", S+"share.py", 'self.mdns = mdns_name() if enabled and mdns else None', 'self.mdns = mdns_name() if mdns else None'),
+ ("mdns on without the flag", S+"share.py", 'self.mdns = mdns_name() if enabled and mdns else None', 'self.mdns = mdns_name() if enabled else None'),
+ ("serve ignores --share-mdns", S+"cli.py", 'srv = make_server(a.port, reg, share=share, mdns=mdns)', 'srv = make_server(a.port, reg, share=share)'),
+ ("mdns env switch works without sharing", S+"cli.py", 'mdns = share and share_mdns_requested(a.share_mdns)', 'mdns = share_mdns_requested(a.share_mdns)'),
+ ("--share-mdns without --share accepted", S+"cli.py", 'if a.share_mdns and not share:', 'if False:'),
+ ("mdns env switch ignored", S+"cli.py", 'return flag or os.environ.get("REVIEW_DESK_SHARE_MDNS") == "1"', 'return flag'),
+ ("detached desk drops --share-mdns", S+"cli.py", '        if share_mdns_requested(mdns):\n            cmd.append("--share-mdns")', '        pass'),
+ ("background drops --share-mdns", S+"cli.py", 'ensure_running(a.port, reload=a.reload, share=a.share, mdns=a.share_mdns)', 'ensure_running(a.port, reload=a.reload, share=a.share)'),
+ ("supervised desk drops --share-mdns", "src/review_desk/reload.py", '(["--share-mdns"] if mdns else [])', '[]'),
+ ("--share-mdns on a running desk is silent", S+"cli.py", '        if mdns:\n            print(', '        if False:\n            print('),
+ ("urls listed while closed", S+"share.py", '        if not self.active():\n            return []\n        now', '        now'),
+ ("urls drop the mdns name", S+"share.py", 'if self.mdns else []', 'if False else []'),
+ ("mdns name unvalidated", S+"share.py", 'return name if MDNS_NAME.fullmatch(name) else None', 'return name or None'),
+ ("interface urls keep public addresses", S+"share.py", '        if not is_lan(ip) or ip in seen:', '        if ip in seen:'),
+ ("share state hides the control flag", S+"server.py", '"canControl": self._can_control(),', '"canControl": True,'),
+ ("share flag not passed to the supervised desk", "src/review_desk/reload.py", '(["--share"] if share else [])', '[]'),
+ ("detached desk drops --share", S+"cli.py", '    if share_requested(share):\n        cmd.append("--share")', '    pass'),
+ ("share env switch ignored", S+"cli.py", 'return flag or os.environ.get("REVIEW_DESK_SHARE") == "1"', 'return flag'),
+ ("serve ignores --share", S+"cli.py", 'srv = make_server(a.port, reg, share=share, mdns=mdns)', 'srv = make_server(a.port, reg, mdns=mdns)'),
+ ("background drops --share", S+"cli.py", 'ensure_running(a.port, reload=a.reload, share=a.share, mdns=a.share_mdns)', 'ensure_running(a.port, reload=a.reload, mdns=a.share_mdns)'),
+ ("--share on a running desk is silent", S+"cli.py", '        if share:\n            print(', '        if False:\n            print('),
+ ("share command skips the write header", S+"cli.py", '"X-Review-Desk": "1"})\n    req =', '})\n    req ='),
+ ("scan rehash sweep never runs", S+"changes.py", 'if old and old[:2] == (st.st_mtime_ns, st.st_size) and now - old[3] < SWEEP_SECONDS:', 'if old and old[:2] == (st.st_mtime_ns, st.st_size):'),
+ ("manifest cache never refreshed", S+"changes.py", 'if cached and cached[0] == sig and now - cached[1] < SWEEP_SECONDS:', 'if cached and cached[0] == sig:'),
+ ("scan trusts mtime for content", S+"changes.py", 'fp = _sha(read_regular(path))', 'fp = str(st.st_mtime_ns)'),
+ ("oversize files are read whole", S+"changes.py", 'if st.st_size > MAX_HASHED:', 'if False:'),
+ ("baseline counted as a change", S+"changes.py", '                if old is not None:\n                    _add(', '                if True:\n                    _add('),
+ ("stale fingerprints kept", S+"changes.py", 'stale = [k for k in data["seen"] if k.partition(":")[2] not in ids]', 'stale = []'),
+ ("entries uncapped", S+"changes.py", 'data["items"][item_id] = entries[-MAX_ENTRIES:]', 'data["items"][item_id] = entries'),
+ ("decision fingerprint includes updatedAt", S+"changes.py", 'json.dumps([rec.get("decision") or "", rec.get("note") or ""])', 'json.dumps(rec, sort_keys=True)'),
+ ("api write not remembered by the scan", S+"changes.py", '    data["seen"][key] = record_fingerprint(after)\n', ''),
+ ("one bad packet stops the scan", S+"changes.py", 'except Exception as e:  # one broken packet', 'except ZeroDivisionError as e:  # one broken packet'),
+ ("scan failure reported on every pass", S+"changes.py", 'if self._errors.get(key) != msg:', 'if True:'),
+ ("read_regular reads special files", S+"fsutil.py", '        if not stat.S_ISREG(st.st_mode):', '        if False:'),
+ ("read_regular ignores the size cap", S+"fsutil.py", '        if max_bytes is not None and st.st_size > max_bytes:', '        if False:'),
+ ("manifest read can block", S+"manifest.py", 'data = tomllib.loads(read_regular(mf).decode("utf-8"))', 'data = tomllib.loads(mf.read_bytes().decode("utf-8"))'),
+ ("draft read can block", S+"render.py", 'text = read_regular(p).decode("utf-8", errors="replace")', 'text = p.read_text(encoding="utf-8", errors="replace")'),
+ ("raw read can block", S+"server.py", '            data = read_regular(fp)\n', '            data = fp.read_bytes()\n'),
+ ("decisions read can block", S+"decisions.py", 'data = json.loads(read_regular(p).decode("utf-8"))', 'data = json.loads(p.read_text(encoding="utf-8"))'),
+ ("changes file read can block", S+"changes.py", 'data = json.loads(read_regular(path_for(packet_dir), MAX_LOG_BYTES).decode("utf-8"))', 'data = json.loads(path_for(packet_dir).read_text(encoding="utf-8"))'),
+ ("draft hash read can block", S+"changes.py", 'fp = _sha(read_regular(path))', 'fp = _sha(path.read_bytes())'),
+ ("deep json overflows the changes reader", S+"changes.py", 'except (OSError, ValueError, RecursionError):  # missing', 'except (OSError, ValueError):  # missing'),
+ ("deep json overflows the decisions reader", S+"decisions.py", 'except (ValueError, RecursionError) as e:', 'except ValueError as e:'),
+ ("child desk imports from the current directory", S+"cli.py", 'cmd = [sys.executable, "-P", "-m", "review_desk"', 'cmd = [sys.executable, "-m", "review_desk"'),
+ ("supervised desk imports from the current directory", "src/review_desk/reload.py", '[sys.executable, "-P", "-m", "review_desk"', '[sys.executable, "-m", "review_desk"'),
+ ("scans of one packet overlap", S+"changes.py", '            with self._scanning:\n                self._scan(entry)', '            if True:\n                self._scan(entry)'),
+ ("file fingerprints kept for departed packets", S+"changes.py", 'self._files = {k: v for k, v in self._files.items() if not k.startswith(root)}', 'self._files = self._files'),
+ ("tooltip offers addresses that will be refused", S+"share.py", '                if ip in self._ips]  # an interface', '                ]  # an interface'),
+ ("seen keys unsanitised", S+"changes.py", 'if isinstance(v, str) and ":" in k}', '}'),
+ ("late scans not marked coarse", S+"changes.py", 'coarse = prev is None or now_c - prev[0] > COARSE_AFTER', 'coarse = False'),
+ ("late scans stamped with the scan time", S+"changes.py", 'if not coarse or mtime_ns is None:\n            return now_wall', 'if True:\n            return now_wall'),
+ ("future mtime trusted", S+"changes.py", 'if m > now_wall or (prev_wall is not None and m <= prev_wall):', 'if False:'),
+ ("stale mtime trusted", S+"changes.py", 'if m > now_wall or (prev_wall is not None and m <= prev_wall):', 'if m > now_wall:'),
+ ("open packets scanned at the closed rate", S+"changes.py", 'every = self.open_interval if self._is_open(key, now) else self.closed_interval', 'every = self.closed_interval'),
+ ("closed packets scanned at the open rate", S+"changes.py", 'every = self.open_interval if self._is_open(key, now) else self.closed_interval', 'every = self.open_interval'),
+ ("first poll does not catch up", S+"changes.py", '        if not was_open:\n            self.scan_packet(entry)', '        if False:\n            self.scan_packet(entry)'),
+ ("open never expires", S+"changes.py", 'return seen is not None and now - seen <= OPEN_TTL', 'return seen is not None'),
+ ("direct edit hidden by a later write", S+"changes.py", 'if prior is not None and prior != record_fingerprint(before):', 'if False:'),
+ ("changes route does not touch the watcher", S+"server.py", 'self.server.watcher.touch(self.server.registry.get(pid))  # a page', 'pass  # a page'),
+ ("coarse not shown on the card", S+"static/page.js", ' + (en.coarse ? " (possibly several changes)" : "")', ''),
+ ("scan runs outside the lock", S+"changes.py", 'with LOCK:  # decisions are read under the lock', 'if True:  # decisions are read under the lock'),
+ ("decision write runs outside the lock", S+"server.py", 'with changes.LOCK:  # the scan must not', 'if True:  # the scan must not'),
+ ("page writes listed as external", S+"server.py", 'external = self.headers.get("X-Review-Page") != "1"', 'external = True'),
+ ("agent writes not listed", S+"server.py", 'external = self.headers.get("X-Review-Page") != "1"', 'external = False'),
+ ("change log failure fails the write", S+"server.py", '                except Exception:  # the change log is derived data', '                except ZeroDivisionError:  # the change log is derived data'),
+ ("changes route unregistered", S+"server.py", '    (re.compile(rf"^/api/p/{SEG}/changes$"), "changes"),\n', ''),
+ ("changes route leaks the fingerprints", S+"server.py", 'self._json(200, changes.read(p.dir))', 'self._json(200, changes._read_file(p.dir))'),
+ ("serve never starts the watcher", S+"cli.py", '    srv.watcher.start()  # records', '    pass  # records'),
+ ("page writes not marked", S+"static/page.js", '"X-Review-Desk": "1", "X-Review-Page": "1" }', '"X-Review-Desk": "1" }'),
+ ("changes list parsed as html", S+"static/page.js", 'li.append(t, ` ${name(en)}${en.detail ? ": " + String(en.detail) : ""}`);', 'li.innerHTML = ` ${name(en)}${en.detail ? ": " + String(en.detail) : ""}`; li.prepend(t);'),
+ ("changes list oldest first", S+"static/page.js", '[...h[card.dataset.id]].reverse() : [];\n        const box = card.querySelector("[data-changed]");', '[...h[card.dataset.id]] : [];\n        const box = card.querySelector("[data-changed]");'),
+ ("server threads keep the small default stack", S+"server.py", '        threading.stack_size(THREAD_STACK)  # for every thread', '        pass  # for every thread'),
+ ("accept-time getsockname failure ends the server", S+"server.py", '        except OSError:  # the peer already reset the connection; an exception here would end serve_forever\n            return False', '        except ZeroDivisionError:  # the peer already reset the connection; an exception here would end serve_forever\n            return False'),
+ ("torn writes recorded as changes", S+"changes.py", 'if old is not None and mtime is not None and self._epoch() - mtime / 1e9 < self.settle:', 'if False:'),
+ ("ago: seconds run on into minutes", S+"static/page.js", 'if (sec < 60) return `${Math.floor(sec)} s ago`;', 'if (sec < 600) return `${Math.floor(sec)} s ago`;'),
+ ("ago: nothing is just now", S+"static/page.js", 'if (sec < 10) return "just now";', 'if (sec < 0) return "just now";'),
+ ("ago: day not singular", S+"static/page.js", '${d === 1 ? "" : "s"}', '${"s"}'),
+ ("ago: hours run into days", S+"static/page.js", 'if (sec < 86400) return `${Math.floor(sec / 3600)} h ago`;', 'if (sec < 864000) return `${Math.floor(sec / 3600)} h ago`;'),
+ ("ago: timestamp without it", S+"static/page.js", '`${fmt(iso)} (${agoText((Date.now() - t) / 1000)})`', 'fmt(iso)'),
+ ("ago: card line without it", S+"static/page.js", 'line.textContent = `Last changed ${stamp(entries[0].at)} · ${line.dataset.label}`;', 'line.textContent = `Last changed ${fmt(entries[0].at)} · ${line.dataset.label}`;'),
+ ("ago: list entries without it", S+"static/page.js", 't.textContent = stamp(en.at);', 't.textContent = fmt(en.at);'),
+ ("ago: never ticks", S+"static/page.js", '  shareTimers.push(setInterval(tickAgo, 5000));', ''),
+ ("ago: tick skips the list", S+"static/page.js", 'for (const t of document.querySelectorAll("[data-changed-list] time[data-at]")) t.textContent = stamp(t.dataset.at);', ''),
+ ("ago: tick drops the change kind", S+"static/page.js", '`Last changed ${stamp(line.dataset.at)} · ${line.dataset.label}`', '`Last changed ${stamp(line.dataset.at)}`'),
+ ("changes tooltip not scrollable", S+"static/page.css", 'max-height: 12em; overflow-y: auto;', 'max-height: 12em;'),
+ ("changes tooltip closes before the pointer reaches it", S+"static/page.css", '.changed:hover .change-tip, .changed:focus-within .change-tip { display: block; }', '.changed-btn:hover + .change-tip, .changed:focus-within .change-tip { display: block; }'),
+ ("changes tooltip unreachable by keyboard", S+"static/page.css", '.changed:hover .change-tip, .changed:focus-within .change-tip { display: block; }', '.changed:hover .change-tip { display: block; }'),
+ ("share page script never shows the tooltip urls", S+"static/page.js", 'setTitle(`Open from this network:', 'setTitle(`Open:'),
+
  ("--no-browser still launches", S+"cli.py", 'if not a.no_browser:', 'if True:'),
  ("browser setting ignored", S+"cli.py", 'open_browser(url, a.browser or os.environ.get("REVIEW_DESK_BROWSER") or None)', 'open_browser(url, None)'),
  ("registry corrupt -> wipe", S+"registry.py", 'raise RegistryError(f"{self.file} is unreadable ({e}); fix or delete it by hand") from None', 'return []'),
 ]
+BAR = "--bar" in sys.argv
+if "--only" in sys.argv:
+    ONLY = sys.argv[sys.argv.index("--only") + 1]
+    MUTANTS = [m for m in MUTANTS if ONLY in m[0]]
+    if not MUTANTS:
+        raise SystemExit(f"no mutant name contains {ONLY!r}")
+def clock(sec): return f"{int(sec) // 60}:{int(sec) % 60:02}"
 base = subprocess.run(["uv","run","--offline","pytest","-q","-x"], cwd=R, capture_output=True, text=True)
 if base.returncode != 0:
     shutil.rmtree(_tmp, ignore_errors=True)
     raise SystemExit("baseline must be green:\n" + base.stdout[-500:])
 survivors = []
-for name, f, old, new in MUTANTS:
+t0 = time.time()
+if BAR: print(f"baseline green; {len(MUTANTS)} mutants to run", flush=True)
+for done, (name, f, old, new) in enumerate(MUTANTS, 1):
     p = R / f; orig = p.read_text()
     assert orig.count(old) == 1, f"{name}: anchor not unique/found"
     p.write_text(orig.replace(old, new))
@@ -116,8 +243,15 @@ for name, f, old, new in MUTANTS:
         failed, first = True, "timeout"
     finally:
         p.write_text(orig)
-    print(("KILLED  " if failed else "SURVIVED") + f"  {name}  {first[:110]}")
     if not failed: survivors.append(name)
+    if BAR:
+        if not failed: print(f"SURVIVED  {name}", flush=True)
+        elapsed = time.time() - t0
+        fill = 30 * done // len(MUTANTS)
+        print(f"[{'#' * fill}{'.' * (30 - fill)}] {done}/{len(MUTANTS)}  killed {done - len(survivors)}  survivors {len(survivors)}"
+              f"  {clock(elapsed)} elapsed, ~{clock(elapsed / done * (len(MUTANTS) - done))} left", flush=True)
+    else:
+        print(("KILLED  " if failed else "SURVIVED") + f"  {name}  {first[:110]}", flush=True)
 print(f"{len(MUTANTS)-len(survivors)}/{len(MUTANTS)} killed; survivors: {survivors}")
 shutil.rmtree(_tmp, ignore_errors=True)
 raise SystemExit(1 if survivors else 0)

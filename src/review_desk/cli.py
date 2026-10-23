@@ -25,6 +25,14 @@ def default_port() -> int:
     return int(os.environ.get("REVIEW_DESK_PORT") or DEFAULT_PORT)
 
 
+def share_requested(flag: bool = False) -> bool:
+    return flag or os.environ.get("REVIEW_DESK_SHARE") == "1"
+
+
+def share_mdns_requested(flag: bool = False) -> bool:
+    return flag or os.environ.get("REVIEW_DESK_SHARE_MDNS") == "1"
+
+
 def base_url(port: int) -> str:
     return f"http://127.0.0.1:{port}/"
 
@@ -47,13 +55,21 @@ def probe(port: int) -> str:
         return "none"
 
 
-def ensure_running(port: int, reload: bool = False) -> None:
+def ensure_running(port: int, reload: bool = False, share: bool = False, mdns: bool = False) -> None:
     """Start `review-desk serve` detached if nothing answers on the port; log to $REVIEW_DESK_STATE/desk-<port>.log.
-    With reload (or REVIEW_DESK_RELOAD=1) the detached desk restarts itself when its Python source changes."""
+    With reload (or REVIEW_DESK_RELOAD=1) the detached desk restarts itself when its Python source changes; with share
+    (or REVIEW_DESK_SHARE=1) it runs in share mode, and with mdns (or REVIEW_DESK_SHARE_MDNS=1, which needs share too) it
+    also accepts this machine's `.local` name."""
     state = probe(port)
     if state == "desk":
         if reload:
             print(f"review-desk: a desk is already running on port {port}; --reload only applies to a desk this command "
+                  "starts, so stop that one first", file=sys.stderr)
+        if share:
+            print(f"review-desk: a desk is already running on port {port}; --share only applies to a desk this command "
+                  "starts, so stop that one first", file=sys.stderr)
+        if mdns:
+            print(f"review-desk: a desk is already running on port {port}; --share-mdns only applies to a desk this command "
                   "starts, so stop that one first", file=sys.stderr)
         return
     if state == "other":
@@ -61,9 +77,13 @@ def ensure_running(port: int, reload: bool = False) -> None:
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     log = open(sd / f"desk-{port}.log", "ab")
-    cmd = [sys.executable, "-m", "review_desk", "serve", "--port", str(port)]
+    cmd = [sys.executable, "-P", "-m", "review_desk", "serve", "--port", str(port)]  # -P: never import from the current directory
     if reload or os.environ.get("REVIEW_DESK_RELOAD") == "1":
         cmd.append("--reload")
+    if share_requested(share):
+        cmd.append("--share")
+        if share_mdns_requested(mdns):
+            cmd.append("--share-mdns")
     subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     for _ in range(50):
         time.sleep(0.1)
@@ -155,8 +175,12 @@ def cmd_new(a, reg: Registry):
 
 def cmd_serve(a, reg: Registry):
     from .server import make_server
+    share = share_requested(a.share)
+    if a.share_mdns and not share:
+        raise CliError("--share-mdns needs --share")
+    mdns = share and share_mdns_requested(a.share_mdns)  # the env switch alone, without sharing, is ignored
     if a.background:
-        ensure_running(a.port, reload=a.reload)
+        ensure_running(a.port, reload=a.reload, share=a.share, mdns=a.share_mdns)
         print(base_url(a.port))
         return
     if probe(a.port) != "none":
@@ -165,9 +189,13 @@ def cmd_serve(a, reg: Registry):
         from . import reload as rl
         print(f"review-desk serving {base_url(a.port)} and restarting on source changes", flush=True)
         rl.stop_on_sigterm()
-        return rl.supervise(lambda: rl.spawn_desk(a.port), rl.snapshot)
-    srv = make_server(a.port, reg)
+        return rl.supervise(lambda: rl.spawn_desk(a.port, share, mdns), rl.snapshot)
+    srv = make_server(a.port, reg, share=share, mdns=mdns)
+    srv.watcher.start()  # records external changes to items (open packets about every second, others every 10 minutes)
     print(f"review-desk serving {base_url(a.port)} (registry: {reg.file})", flush=True)
+    if share:
+        print("share mode: the local network can reach this desk only while a 4-hour share window is open "
+              "(Share button on the page)" + ("; its .local name is accepted too" if mdns else ""), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -190,6 +218,40 @@ def cmd_open(a, reg: Registry):
     print(url)
 
 
+def cmd_share(a, reg: Registry):
+    """Read or change the desk's share window through its localhost API (the same route the page's button uses)."""
+    if probe(a.port) != "desk":
+        raise CliError(f"no desk on port {a.port}; start one with `review-desk serve --share`")
+    headers = {"Host": f"127.0.0.1:{a.port}"}
+    data = None
+    if a.action != "status":
+        data = json.dumps({"action": a.action}).encode()
+        headers.update({"Content-Type": "application/json", "X-Review-Desk": "1"})
+    req = urllib.request.Request(base_url(a.port) + "api/share", data=data, headers=headers)
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5) as r:
+            s = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error")
+        except ValueError:
+            msg = None
+        raise CliError(msg or f"the desk answered {e.code}") from None
+    except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError) as e:
+        raise CliError(f"couldn't reach the desk: {e}") from None
+    if a.json:
+        print(json.dumps(s, indent=1))
+    elif not s["enabled"]:
+        print("share mode is off (start the desk with `review-desk serve --share`)")
+    elif not s["active"]:
+        print("sharing: off")
+    else:
+        sec = s["remaining"]
+        print(f"sharing: on, {sec // 3600}:{sec // 60 % 60:02}:{sec % 60:02} left")
+        for u in s["urls"]:
+            print(f"  {u['url']}  ({u['label']})")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="review-desk", description="Local approval desk for agent drafts.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -207,13 +269,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("dir", nargs="?"); s.add_argument("--json", action="store_true"); port_arg(s); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("new", help="scaffold a review.toml in a directory")
     s.add_argument("dir"); s.add_argument("--title"); s.set_defaults(fn=cmd_new)
-    s = sub.add_parser("serve", help="run the desk (127.0.0.1 only); foreground unless --background")
+    s = sub.add_parser("serve", help="run the desk (127.0.0.1 only, unless --share); foreground unless --background")
     port_arg(s)
     s.add_argument("--background", action="store_true", help="start detached if not already running, print the URL, exit")
     s.add_argument("--reload", action="store_true",
                    help="restart the desk when its Python source changes (page.js/page.css already hot-swap without this); "
                         "REVIEW_DESK_RELOAD=1 does the same for desks that `open` starts. Edits to cli.py and reload.py "
                         "restart only the desk, not the supervisor")
+    s.add_argument("--share", action="store_true",
+                   help="allow sharing with the local network: binds all interfaces, but refuses every other machine "
+                        "until a 4-hour share window is switched on from the page (or POST /api/share on localhost); "
+                        "REVIEW_DESK_SHARE=1 does the same for desks that `open` starts")
+    s.add_argument("--share-mdns", action="store_true",
+                   help="with --share: also accept (and list in the Share tooltip) this machine's <name>.local mDNS name. "
+                        "Off by default, since anyone on the network can claim a .local name; REVIEW_DESK_SHARE_MDNS=1 "
+                        "does the same for desks that `open` starts (when they run with --share)")
     s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("open", help="open the desk or a packet in a browser; starts the desk if needed; "
                                     "registers the packet if it isn't yet")
@@ -222,6 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
                                                      "default); on macOS an app name, opened in a new window")
     s.add_argument("--no-browser", action="store_true", help="only print the URL (don't start the desk or a browser)")
     s.set_defaults(fn=cmd_open)
+    s = sub.add_parser("share", help="show or change sharing with the local network (the desk must run with --share): "
+                                     "`on` opens a 4-hour window, or resets a running one to a full 4 hours; `off` closes it")
+    s.add_argument("action", nargs="?", choices=["status", "on", "off"], default="status")
+    s.add_argument("--json", action="store_true"); port_arg(s); s.set_defaults(fn=cmd_share)
     return p
 
 

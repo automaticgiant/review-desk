@@ -17,6 +17,7 @@ from urllib.parse import unquote
 
 from markdown_it import MarkdownIt
 
+from .fsutil import read_regular
 from .manifest import Item, Link, Packet
 
 _SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
@@ -124,6 +125,7 @@ def index_page(rows: list[dict]) -> str:
     body = f'''<main class="wrap">
   <h1>Review desk</h1>
   <p class="intro">Packets waiting for review. Decisions save beside each packet's <code>review.toml</code> as you click.</p>
+  <div class="share" id="share" hidden></div>
   {listing}
 </main>
 <script src="/static/page.js"></script>'''
@@ -163,6 +165,10 @@ def _card(n: int, item: Item, draft_html_: str, pid: str) -> str:
   </div></div>
   <details class="earlier" data-earlier hidden><summary>Earlier notes (<span data-earlier-count>0</span>)</summary><ol data-earlier-list></ol></details>
   <p class="saved" data-draft-updated aria-live="polite"></p>
+  <div class="changed" data-changed hidden>
+    <button type="button" class="changed-btn" data-changed-text aria-describedby="{sid}-changes"></button>
+    <div class="change-tip" id="{sid}-changes" role="tooltip"><ul data-changed-list tabindex="0" aria-label="Changes to this item, newest first"></ul></div>
+  </div>
   <details class="draft"><summary>Read the draft</summary><div class="draft-body">{draft_html_}</div></details>
 </article>'''
 
@@ -173,7 +179,10 @@ def draft_html(packet: Packet, item: Item) -> str:
         return "<p>No draft file.</p>"
     if not p.is_file():
         return f'<p class="perror">Draft file not found: <code>{e(item.file)}</code></p>'
-    text = p.read_text(encoding="utf-8", errors="replace")
+    try:
+        text = read_regular(p).decode("utf-8", errors="replace")
+    except OSError:  # became a FIFO or vanished since the check
+        return f'<p class="perror">Draft file not found: <code>{e(item.file)}</code></p>'
     if p.suffix.lower() == ".txt":
         return f"<pre>{e(text)}</pre>"
     return md(text)
@@ -233,6 +242,7 @@ def _packet_html(pid: str, packet: Packet, drafts: bool, layout: str) -> str:
   <span class="pill" id="n-open">{n} not reviewed</span>
   <label class="wrap-toggle"><input type="checkbox" id="wrap-toggle"> Wrap long lines</label>
   <label class="wrap-toggle"><input type="checkbox" id="hide-reviewed-toggle"> <span id="hide-reviewed-label">Hide reviewed</span></label>
+  <span class="share" id="share" hidden></span>
   <button type="button" id="help-toggle" class="help-toggle" aria-haspopup="dialog" aria-controls="help-dialog" aria-expanded="false">How this works</button>
   <span class="conn" id="conn">Connecting…</span>
 </div>

@@ -38,8 +38,9 @@ def stop_on_sigterm() -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
-def spawn_desk(port: int):
-    return subprocess.Popen([sys.executable, "-m", "review_desk", "serve", "--port", str(port)])
+def spawn_desk(port: int, share: bool = False, mdns: bool = False):
+    return subprocess.Popen([sys.executable, "-P", "-m", "review_desk", "serve", "--port", str(port)]
+                            + (["--share"] if share else []) + (["--share-mdns"] if mdns else []))
 
 
 def _stop(child) -> None:

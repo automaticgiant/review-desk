@@ -8,11 +8,91 @@
   const ac = new AbortController();
   const listen = (target, type, fn, opts) => target.addEventListener(type, fn, { ...opts, signal: ac.signal });
   let poll = null, dead = false;
+  const shareTimers = [];
   // A replaced copy must not touch the page any more (render, connection state, fetch results), or it would fight the
   // new one with its frozen state. Pending note saves still go out: they're the human's text.
-  window.__deskDispose = () => { dead = true; ac.abort(); clearInterval(poll); };
+  window.__deskDispose = () => { dead = true; ac.abort(); clearInterval(poll); shareTimers.forEach(clearInterval); };
 
   const fmt = iso => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString(); };
+  // How long ago, for the "Last changed" line and its list: seconds under a minute, then minutes, hours, days.
+  const agoText = sec => {
+    if (!(sec >= 0)) sec = 0; // NaN, or a clock a little behind the file's
+    if (sec < 10) return "just now";
+    if (sec < 60) return `${Math.floor(sec)} s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)} h ago`;
+    const d = Math.floor(sec / 86400);
+    return `${d} day${d === 1 ? "" : "s"} ago`;
+  };
+  const stamp = iso => { const t = new Date(iso).getTime(); return isNaN(t) ? fmt(iso) : `${fmt(iso)} (${agoText((Date.now() - t) / 1000)})`; };
+
+  // Share mode (desk started with --share): a button that opens a 4-hour window for the local network, counts it down, and
+  // on a click either resets it to 4:00:00 or, right after a start or reset (3:59 or more left), ends it. Its tooltip lists
+  // the URLs to open from another device. The server decides what a click does; hidden entirely when sharing isn't enabled.
+  function initShare(el) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "share-btn";
+    const err = document.createElement("span");
+    err.className = "share-error";
+    el.append(btn, err);
+    let s = null, syncedAt = 0, busy = false;
+    const clock = sec => {
+      sec = Math.ceil(sec);
+      const two = n => String(n).padStart(2, "0");
+      return `${Math.floor(sec / 3600)}:${two(Math.floor(sec / 60) % 60)}:${two(sec % 60)}`;
+    };
+    const setTitle = t => { if (btn.title !== t) btn.title = t; };
+    function paint() {
+      if (dead) return;
+      if (!s || !s.enabled) { el.hidden = true; return; }
+      el.hidden = false;
+      const left = Math.max(0, s.remaining - (Date.now() - syncedAt) / 1000);
+      const on = s.active && left > 0;
+      btn.setAttribute("aria-pressed", String(on));
+      btn.disabled = busy || !s.canControl;
+      if (!on) {
+        btn.textContent = "Share on this network (4h)";
+        setTitle(s.canControl ? "Let devices on your local network open this desk for 4 hours"
+                              : "Sharing is switched on from the machine running the desk, at its localhost address");
+        return;
+      }
+      btn.textContent = `Sharing ${clock(left)}`;
+      const urls = s.urls.map(u => `${new URL(location.pathname, u.url).href}  (${u.label})`);
+      const act = !s.canControl ? "Only the machine running the desk can change this."
+        : left < s.bumpBelow ? "Click to reset the timer to 4:00:00." : "Click to stop sharing.";
+      setTitle(`Open from this network:\n${urls.length ? urls.join("\n") : "(no network address found)"}\n\n${act}`);
+    }
+    async function sync(action) {
+      try {
+        const r = await fetch("/api/share", action ? {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Review-Desk": "1" },
+          body: JSON.stringify({ action }),
+        } : { cache: "no-store" });
+        const body = await r.json().catch(() => ({}));
+        if (dead) return;
+        if (!r.ok) throw new Error(body.error || r.status);
+        s = body;
+        syncedAt = Date.now();
+        err.textContent = "";
+      } catch (e) {
+        if (!dead && action) err.textContent = `Couldn't change sharing (${e.message})`;
+      }
+      paint();
+    }
+    listen(btn, "click", async () => {
+      busy = true;
+      paint();
+      await sync("toggle");
+      busy = false;
+      paint();
+    });
+    shareTimers.push(setInterval(paint, 1000), setInterval(() => { if (!document.hidden) sync(); }, 5000));
+    sync();
+  }
+  const shareEl = document.getElementById("share");
+  if (shareEl) initShare(shareEl);
 
   if (document.body.dataset.page === "index") {
     for (const t of document.querySelectorAll("time[data-iso]")) if (t.dataset.iso !== "never") t.textContent = fmt(t.dataset.iso);
@@ -182,7 +262,7 @@
     render();
     const run = () => fetch(`${api}/items/${id}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json", "X-Review-Desk": "1" },
+      headers: { "Content-Type": "application/json", "X-Review-Desk": "1", "X-Review-Page": "1" },
       body: JSON.stringify(patch),
     }).then(async r => {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
@@ -331,11 +411,57 @@
     } catch { /* the next tick tries again */ }
   }
 
+  // External changes (a draft file, the manifest entry, an agent's decision or note write), from review-changes.json. The
+  // newest shows on the card; hovering or focusing it opens the full list (newest first, scrollable). textContent only.
+  const CHANGE_LABEL = { draft: "Draft edited", manifest: "Item details edited", decision: "Decision set by an agent",
+    note: "Note changed by an agent", "decisions-file": "Decisions file edited" };
+  let changesJson = "";
+  async function refreshChanges() {
+    try {
+      const r = await fetch(`${api}/changes`, { cache: "no-store" });
+      if (!r.ok) return;
+      const text = await r.text();
+      if (dead || text === changesJson) return;
+      changesJson = text;
+      const h = JSON.parse(text);
+      for (const card of cards) {
+        const entries = Array.isArray(h[card.dataset.id]) ? [...h[card.dataset.id]].reverse() : [];
+        const box = card.querySelector("[data-changed]");
+        box.hidden = entries.length === 0;
+        if (!entries.length) continue;
+        // A coarse entry came from a scan that hadn't looked for a while, so it may be several changes.
+        const name = en => (CHANGE_LABEL[en.kind] || String(en.kind)) + (en.coarse ? " (possibly several changes)" : "");
+        const line = box.querySelector("[data-changed-text]");
+        line.dataset.at = entries[0].at;
+        line.dataset.label = name(entries[0]);
+        line.textContent = `Last changed ${stamp(entries[0].at)} · ${line.dataset.label}`;
+        box.querySelector("[data-changed-list]").replaceChildren(...entries.map(en => {
+          const li = document.createElement("li");
+          const t = document.createElement("time");
+          t.dataset.at = en.at;
+          t.textContent = stamp(en.at);
+          li.append(t, ` ${name(en)}${en.detail ? ": " + String(en.detail) : ""}`);
+          return li;
+        }));
+      }
+    } catch { /* the next tick tries again */ }
+  }
+
+  // The "(5 min ago)" parts move on without another fetch.
+  function tickAgo() {
+    if (dead) return;
+    for (const line of document.querySelectorAll("[data-changed-text][data-at]")) {
+      line.textContent = `Last changed ${stamp(line.dataset.at)} · ${line.dataset.label}`;
+    }
+    for (const t of document.querySelectorAll("[data-changed-list] time[data-at]")) t.textContent = stamp(t.dataset.at);
+  }
+  shareTimers.push(setInterval(tickAgo, 5000));
+
   function refresh(first) {
     const w = writes;
     return fetch(`${api}/state`, { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(s => { if (dead || w !== writes) return; state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); refreshHistory(); })
+      .then(s => { if (dead || w !== writes) return; state = s || {}; render(); if (first) setConn(true, "Connected: decisions save as you click"); refreshDrafts(); refreshHistory(); refreshChanges(); })
       .catch(() => setConn(false, "Not connected")); // setConn ignores a replaced copy
   }
 

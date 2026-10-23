@@ -103,6 +103,7 @@ def desk(registry, packet):
     client.pid = entry.id
     client.packet = packet
     client.registry = registry
+    client.srv = srv
     yield client
     srv.shutdown()
     srv.server_close()

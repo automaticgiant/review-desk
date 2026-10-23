@@ -1,14 +1,26 @@
 #!/bin/sh
-# Run the review-desk CLI from this checkout. State: $REVIEW_DESK_STATE (default ~/.local/state/review-desk).
-# Works when installed as a symlink (e.g. ~/.local/bin/review-desk): follow the links to the real file first,
-# and run the module rather than a "review-desk" command, which would find this launcher again on PATH.
-SELF="$0"
-while [ -L "$SELF" ]; do
-  LINK="$(readlink "$SELF")"
-  case "$LINK" in
-    /*) SELF="$LINK" ;;
-    *) SELF="$(dirname "$SELF")/$LINK" ;;
-  esac
-done
-TOOLS="$(cd "$(dirname "$SELF")/.." && pwd)"
-exec uv run --offline --quiet --project "$TOOLS" python -m review_desk "$@"
+"exec" "uv" "run" "--offline" "--quiet" "--script" "$0" "$@"
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["markdown-it-py[linkify]>=4,<5"]
+# ///
+"""Run the review-desk CLI from this checkout. State: $REVIEW_DESK_STATE (default ~/.local/state/review-desk).
+
+A PEP 723 script: `uv run --script` builds (and caches) an environment from the block above, so no project install is
+needed. Keep it in step with pyproject.toml (a test checks). The first two lines are a polyglot: sh runs the quoted
+`exec` line, Python reads it as a harmless string, so this works where `#!/usr/bin/env -S` doesn't (busybox, GNU
+coreutils before 8.30). The package itself is imported from ../src; Path.resolve()
+follows a symlink such as ~/.local/bin/review-desk back to this checkout."""
+import os
+import sys
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parent.parent / "src"
+sys.path.insert(0, str(SRC))
+# Desks this process starts (`open`, `serve --background`, the reload supervisor) run `python -m review_desk` in a new
+# interpreter, which has to find the package too.
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))
+
+from review_desk.cli import main  # noqa: E402
+
+sys.exit(main())

@@ -21,7 +21,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .fsutil import atomic_write_json
+from .fsutil import NotRegularError, atomic_write_json, read_regular
 
 DECISIONS = "review-decisions.json"
 HISTORY = "review-history.json"
@@ -59,8 +59,12 @@ def _read_object(p: Path) -> dict:
     if not p.exists():
         return {}
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except ValueError as e:
+        data = json.loads(read_regular(p).decode("utf-8"))  # never blocks on a FIFO or device, even one swapped in just now
+    except NotRegularError:
+        raise DecisionsError(f"{p} is not a regular file; not touching it") from None
+    except OSError as e:
+        raise DecisionsError(f"{p} can't be read ({e.strerror or e}); not touching it") from None
+    except (ValueError, RecursionError) as e:
         raise DecisionsError(f"{p} is not valid JSON ({e}); not touching it") from None
     if not isinstance(data, dict):
         raise DecisionsError(f"{p} must hold a JSON object")

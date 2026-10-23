@@ -10,6 +10,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .fsutil import read_regular
+
 MANIFEST = "review.toml"
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 FILE_SUFFIXES = (".md", ".markdown", ".txt")
@@ -106,9 +108,11 @@ def load(directory) -> Packet:
     if not mf.is_file():
         raise ManifestError(f"no {MANIFEST} in {root}")
     try:
-        data = tomllib.loads(mf.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
+        data = tomllib.loads(read_regular(mf).decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
         raise ManifestError(f"{mf}: invalid TOML: {e}") from None
+    except OSError as e:
+        raise ManifestError(f"{mf}: can't read it ({e.strerror or e})") from None
     title = _str(data, "title", MANIFEST, required=True)
     intro = _str(data, "intro", MANIFEST)
     appendix = _str(data, "appendix", MANIFEST)
