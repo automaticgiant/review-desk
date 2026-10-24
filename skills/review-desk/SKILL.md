@@ -70,10 +70,10 @@ down.
 
 If the human is reviewing now and you have nothing else to do, don't ask in chat. Run `bin/poll-packet <dir>` (in the
 review-desk checkout) as a background command. It is read-only: it polls `review-desk status <dir> --json` and exits,
-printing `CHANGED` and a snapshot, when any item's decision or note changes, so you are re-invoked when the human
+printing `CHANGED` and a snapshot, when any item's decision or note changes (or an item is added or removed), so you are re-invoked when the human
 decides. Polling backs off from 15 s to 10 min (`POLL_START` and `POLL_MAX`, in seconds, override). Then read
 `review-desk status <dir> --json` and act only on decided items, as in the workflow. If the human is still partway
-through, run it again. It exits 2 if `status` fails (for example, the packet isn't registered).
+through, run it again. It exits 2 if `status` keeps failing (for example, no `review.toml`, or an invalid manifest or decisions file).
 
 ## Clear a revise mark and its note
 

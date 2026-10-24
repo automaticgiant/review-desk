@@ -1,21 +1,33 @@
 #!/usr/bin/env bash
-# Wait until a packet's decisions or notes change, then print CHANGED and the new snapshot. Read-only: it only runs
-# `review-desk status --json`. Backoff doubles from POLL_START (default 15s) up to POLL_MAX (default 600s).
-# Exit 0: changed. Exit 2: usage error or `status` failed.
+# Wait until a packet's decisions or notes change (or an item is added or removed), then print CHANGED and the new
+# snapshot. Read-only: it only runs `review-desk status --json`. Backoff doubles from POLL_START (default 15s) up to
+# POLL_MAX (default 600s); both are whole seconds, at least 1.
+# Exit 0: changed. Exit 2: usage error, bad POLL_* value, or `status` failed 3 times in a row.
 set -u
 [ $# -eq 1 ] || { echo "usage: poll-packet <packet-dir>" >&2; exit 2; }
 dir=$1; delay=${POLL_START:-15}; max=${POLL_MAX:-600}
+for v in "$delay" "$max"; do
+  [[ $v =~ ^[1-9][0-9]*$ ]] || { echo "poll-packet: POLL_START and POLL_MAX must be whole seconds >= 1" >&2; exit 2; }
+done
+rd=$(cd "$(dirname "$0")" && pwd)/review-desk
 snap() {
   local out
-  out=$(review-desk status "$dir" --json) || return 1
+  out=$("$rd" status "$dir" --json) || return 1
   printf '%s' "$out" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 print(json.dumps([(i["id"], i["decision"], i["note"]) for i in d["items"]], sort_keys=True))'
 }
 base=$(snap) || exit 2
-while sleep "$delay"; do
-  cur=$(snap) || exit 2
-  if [ "$cur" != "$base" ]; then echo CHANGED; echo "$cur"; exit 0; fi
+fails=0
+while :; do
+  sleep "$delay" || exit 2
+  if cur=$(snap); then
+    fails=0
+    if [ "$cur" != "$base" ]; then echo CHANGED; echo "$cur"; exit 0; fi
+  else
+    fails=$((fails + 1))   # e.g. review.toml mid-edit; give it a few polls
+    [ "$fails" -lt 3 ] || exit 2
+  fi
   delay=$(( delay * 2 > max ? max : delay * 2 ))
 done

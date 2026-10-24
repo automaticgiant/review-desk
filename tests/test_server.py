@@ -43,6 +43,14 @@ def test_packet_page_renders_items(desk):
     assert b'href="/"' in body  # link back to the index
 
 
+def test_packet_page_shows_the_build_tag(desk, monkeypatch):
+    from review_desk import render
+    monkeypatch.setattr(render, "GIT_SHA", "abc1234")
+    assert b'<span class="build" title="git commit this desk is running">abc1234</span>' in desk.get(f"/p/{desk.pid}/")[2]
+    monkeypatch.setattr(render, "GIT_SHA", "")
+    assert b'class="build"' not in desk.get(f"/p/{desk.pid}/")[2]
+
+
 def test_pages_are_titled_as_the_desk(desk):
     """So a desk tab can't be mistaken for another page with the same name."""
     for path in ("/", f"/p/{desk.pid}/"):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -80,10 +81,15 @@ def _links(links: list[Link]) -> str:
 
 
 def _git_sha() -> str:
-    """Short sha of the checkout this code runs from, read once at startup; empty when it isn't a git checkout."""
+    """Short sha of the review-desk checkout this code runs from, read once at startup; empty when it isn't one
+    (an installed copy, or a package inside some other repository)."""
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists() or not (root / "bin" / "review-desk").is_file():
+        return ""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
-        out = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5, check=True, env=env).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
     return out if re.fullmatch(r"[0-9a-f]{4,40}", out) else ""
