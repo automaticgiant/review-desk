@@ -126,6 +126,12 @@ note text). This is automatic, so there is nothing for you to call. It does mean
 revised something, so edit the draft once, deliberately, rather than saving it repeatedly. The page marks its own writes
 with `X-Review-Page: 1`; never send that header, so your writes stay labelled as yours.
 
+## After pulling new code (Linux systemd only)
+
+On Linux, if the human runs the desk as a systemd user unit and has set `git config core.hooksPath .githooks`, `git pull`
+restarts the unit (`.githooks/restart-systemd-user-unit`). It does nothing on macOS or without that unit; there, restart
+the desk by hand. A restart ends any share window.
+
 ## Packet format
 
 See the review-desk README, "Packet format", for every manifest field (`title`, `intro`, `links`, `appendix`, and per

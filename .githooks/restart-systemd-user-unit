@@ -1,0 +1,15 @@
+#!/bin/sh
+# Linux + systemd USER units only (`systemctl --user`). Not for macOS/launchd, and not for system-wide units.
+#
+# After a `git pull`, restart the review-desk user unit so the running desk picks up the new Python code.
+# post-merge and post-rewrite are symlinks to this script (post-rewrite covers `git pull --rebase`).
+# Enable per clone with: git config core.hooksPath .githooks
+#
+# A no-op (exit 0) where there is no systemctl, or no such user unit, so it is harmless on macOS and
+# on machines that run the desk by hand. Set REVIEW_DESK_UNIT to restart a unit with another name.
+[ "$(basename "$0")" = post-rewrite ] && [ "$1" != rebase ] && exit 0
+command -v systemctl >/dev/null 2>&1 || exit 0
+unit=${REVIEW_DESK_UNIT:-review-desk.service}
+systemctl --user cat "$unit" >/dev/null 2>&1 || exit 0
+systemctl --user restart "$unit" && echo "restarted systemd user unit $unit"
+exit 0

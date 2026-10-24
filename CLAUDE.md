@@ -36,6 +36,7 @@ itself.
 - `cli.py`: commands, and `open_browser`. `reload.py`: the `serve --reload` supervisor. `bin/review-desk`: launcher (PEP 723 script). `bin/mutation-check`: the can-it-fail check.
 - `changes.py`: external changes per item (`review-changes.json`): the `Watcher` (started by `serve`; open packets scanned ~1 s, others every 10 min, coarse flag after a gap; the changes route calls `touch`), and `record_write`, called by the PUT handler under `changes.LOCK`. `X-Review-Page: 1` marks the page's own writes.
 - `share.py`: share mode (`serve --share`): the in-memory 4-hour window, peer checks, and the interface URLs (and the mDNS name, only with `--share-mdns`) the Share button's tooltip lists. `cli.cmd_share` drives `POST /api/share` for agents.
+- `.githooks/`: Linux + systemd user unit only. `post-merge`/`post-rewrite` symlink to `restart-systemd-user-unit`, which restarts `review-desk.service` after a pull (needs `git config core.hooksPath .githooks`); a no-op on macOS.
 - `skills/review-desk/`: the Claude Code skill for agents using the desk.
 
 ## Gotchas

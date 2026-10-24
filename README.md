@@ -319,6 +319,20 @@ as the files themselves.
 
 Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.review-desk.plist`.
 
+## Optional: restart a systemd user unit after `git pull` (Linux only)
+
+If you run the desk as a systemd **user** unit (`~/.config/systemd/user/review-desk.service`), the checked-in git hooks
+in `.githooks/` restart it after `git pull` (`post-merge`, and `post-rewrite` for `git pull --rebase`), so the desk runs
+the code you just pulled. Enable them once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+This is Linux with systemd only (`systemctl --user`). It does nothing on macOS, where launchd has no equivalent hook here
+(restart with `launchctl kickstart -k gui/$(id -u)/local.review-desk`), and it does nothing where the unit doesn't exist.
+Set `REVIEW_DESK_UNIT` to restart a unit with another name.
+
 ## Development
 
 `uv run --offline pytest -q` runs the tests; `bin/mutation-check` breaks each security and merge rule in turn and
