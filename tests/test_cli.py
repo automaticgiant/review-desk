@@ -175,3 +175,48 @@ def test_open_other_platform_unknown_browser_fails(capsys, state_dir, no_real_br
     monkeypatch.setattr(cli, "PLATFORM", "linux")
     code, _, err = run(capsys, "open", "--port", "9999", "--browser", "no-such-browser")
     assert code == 1 and "no-such-browser" in err
+
+
+def test_wait_returns_when_a_decision_changes(capsys, packet, state_dir, monkeypatch):
+    sleeps = []
+
+    def sleep(n):
+        sleeps.append(n)
+        assert len(sleeps) < 20, "never noticed the change"
+        if len(sleeps) == 3:
+            merge_item(packet, "first-draft", {"decision": "approve", "note": ""})
+    monkeypatch.setattr("review_desk.cli.time.sleep", sleep)
+    code, out, _ = run(capsys, "wait", str(packet), "--start", "1", "--max", "2")
+    assert code == 0
+    assert sleeps == [1, 2, 2]  # doubles, then caps
+    assert out.splitlines()[0] == "CHANGED"
+    assert ["first-draft", "approve", ""] in json.loads(out.splitlines()[1])
+
+
+def test_wait_notices_a_changed_note_and_a_new_item(capsys, packet, state_dir, monkeypatch):
+    monkeypatch.setattr("review_desk.cli.time.sleep",
+                        lambda n: merge_item(packet, "second-draft", {"decision": "", "note": "hm"}))
+    assert run(capsys, "wait", str(packet), "--start", "1")[0] == 0
+
+
+def test_wait_rejects_bad_delays_and_bad_packets(capsys, packet, tmp_path, state_dir, monkeypatch):
+    monkeypatch.setattr("review_desk.cli.time.sleep", lambda n: pytest.fail("must not sleep"))
+    for bad in ("0", "-1"):
+        assert run(capsys, "wait", str(packet), "--start", bad)[0] == 1
+    assert run(capsys, "wait", str(packet), "--max", "0")[0] == 1
+    assert run(capsys, "wait", str(tmp_path))[0] == 1  # no review.toml
+
+
+def test_wait_gives_up_after_three_failed_polls_but_survives_one(capsys, packet, state_dir, monkeypatch):
+    mf = packet / "review.toml"
+    good = mf.read_text()
+    n = []
+
+    def sleep(_):
+        n.append(1)
+        assert len(n) < 20, "never gave up"
+        mf.write_text(good if len(n) == 2 else "not [valid")
+    # poll 1 fails, poll 2 is fine (resets the count), polls 3-5 fail: 3 in a row
+    monkeypatch.setattr("review_desk.cli.time.sleep", sleep)
+    code, _, err = run(capsys, "wait", str(packet), "--start", "1")
+    assert code == 1 and "gave up after 3 failed polls" in err and len(n) == 5

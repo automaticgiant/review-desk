@@ -32,6 +32,7 @@ git clone https://github.com/ddl-h-morgan/review-desk.git review-desk
 cd review-desk && uv sync
 uv run --script bin/review-desk --help                  # once, with network access: builds the launcher's cached environment
 ln -s "$PWD/bin/review-desk" ~/.local/bin/review-desk   # or: alias review-desk="$PWD/bin/review-desk"
+ln -s "$PWD/bin/poll-packet" ~/.local/bin/poll-packet   # optional: the same as `review-desk wait`
 ```
 
 `bin/review-desk` is a [PEP 723](https://peps.python.org/pep-0723/) script: `uv run --script` builds and caches its own
@@ -243,9 +244,11 @@ existing decisions files keep working. Ids that leave the manifest keep their re
    - `drop`: don't do it; leave the file;
    - `undecided`: leave it alone; it's still waiting.
 
-   To wait for the reviewer in the same session, run `bin/poll-packet <dir>` as a background command: it is read-only,
-   and exits with `CHANGED` when any decision or note changes (backoff from 15 s to 10 min; `POLL_START`/`POLL_MAX`
-   override), so the agent is re-invoked, then reads `status --json` as above.
+   To wait for the reviewer in the same session, run `review-desk wait <dir>` as a background command: it is read-only,
+   and exits printing `CHANGED` and a snapshot when any decision or note changes (or an item is added or removed), so
+   the agent is re-invoked, then reads `status --json` as above. It polls with a backoff from 15 s to 10 min
+   (`--start`/`--max` seconds, or `POLL_START`/`POLL_MAX`); it exits 1 if the packet is unreadable for 3 polls in a
+   row. `bin/poll-packet <dir>` is the same thing for a symlink on your PATH.
 4. Never write `review-decisions.json` yourself. Decisions are the reviewer's. (The desk's PUT API exists for the page.)
 
 ## Install the skill

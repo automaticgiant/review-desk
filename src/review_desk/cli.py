@@ -160,6 +160,34 @@ def cmd_status(a, reg: Registry):
     print(json.dumps(s, indent=1) if a.json else text_report(s))
 
 
+def _wait_snapshot(directory) -> str:
+    return json.dumps([(i["id"], i["decision"], i["note"]) for i in summarize_dir(directory)["items"]], sort_keys=True)
+
+
+def cmd_wait(a, reg: Registry):
+    """Read-only: poll the packet's decisions until a decision or note changes (or an item is added or removed)."""
+    for name in ("start", "max"):
+        if getattr(a, name) < 1:
+            raise CliError(f"--{name} must be whole seconds >= 1")
+    base = _wait_snapshot(a.dir)  # a bad packet fails here, at once
+    delay, fails = a.start, 0
+    while True:
+        time.sleep(delay)
+        try:
+            cur = _wait_snapshot(a.dir)
+            fails = 0
+        except (ManifestError, DecisionsError, OSError) as e:  # e.g. review.toml mid-edit; give it a few polls
+            fails += 1
+            if fails >= 3:
+                raise CliError(f"gave up after 3 failed polls: {e}") from None
+            cur = base
+        if cur != base:
+            print("CHANGED")
+            print(cur)
+            return
+        delay = min(delay * 2, a.max)
+
+
 def cmd_new(a, reg: Registry):
     d = Path(a.dir).expanduser().resolve()
     mf = d / MANIFEST
@@ -267,6 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_list)
     s = sub.add_parser("status", help="decisions and notes for one packet (or a summary of all registered ones)")
     s.add_argument("dir", nargs="?"); s.add_argument("--json", action="store_true"); port_arg(s); s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("wait", help="block until a packet's decisions or notes change, then print CHANGED and a snapshot "
+                                    "(read-only; run it in the background to be re-invoked when the reviewer decides)")
+    s.add_argument("dir")
+    s.add_argument("--start", type=int, default=int(os.environ.get("POLL_START") or 15), help="first poll delay, seconds (15)")
+    s.add_argument("--max", type=int, default=int(os.environ.get("POLL_MAX") or 600), help="longest poll delay, seconds (600)")
+    s.set_defaults(fn=cmd_wait)
     s = sub.add_parser("new", help="scaffold a review.toml in a directory")
     s.add_argument("dir"); s.add_argument("--title"); s.set_defaults(fn=cmd_new)
     s = sub.add_parser("serve", help="run the desk (127.0.0.1 only, unless --share); foreground unless --background")

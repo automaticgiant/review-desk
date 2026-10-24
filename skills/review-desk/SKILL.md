@@ -22,6 +22,7 @@ git clone https://github.com/ddl-h-morgan/review-desk.git review-desk
 cd review-desk && uv sync
 uv run --script bin/review-desk --help                    # once, with network: builds the launcher's cached environment
 ln -s "$PWD/bin/review-desk" ~/.local/bin/review-desk     # or: alias review-desk="$PWD/bin/review-desk"
+ln -s "$PWD/bin/poll-packet" ~/.local/bin/poll-packet     # optional: the same as `review-desk wait`
 ```
 
 Optional settings (environment variables):
@@ -68,12 +69,13 @@ down.
 
 ## Waiting for decisions without chat
 
-If the human is reviewing now and you have nothing else to do, don't ask in chat. Run `bin/poll-packet <dir>` (in the
-review-desk checkout) as a background command. It is read-only: it polls `review-desk status <dir> --json` and exits,
-printing `CHANGED` and a snapshot, when any item's decision or note changes (or an item is added or removed), so you are re-invoked when the human
-decides. Polling backs off from 15 s to 10 min (`POLL_START` and `POLL_MAX`, in seconds, override). Then read
+If the human is reviewing now and you have nothing else to do, don't ask in chat. Run `review-desk wait <dir>` as a
+background command. It is read-only: it polls the packet and exits, printing `CHANGED` and a snapshot, when any item's
+decision or note changes (or an item is added or removed), so you are re-invoked when the human decides. Polling backs
+off from 15 s to 10 min (`--start` and `--max`, in seconds; or `POLL_START` and `POLL_MAX`). Then read
 `review-desk status <dir> --json` and act only on decided items, as in the workflow. If the human is still partway
-through, run it again. It exits 2 if `status` keeps failing (for example, no `review.toml`, or an invalid manifest or decisions file).
+through, run it again. It exits 1 if the packet stays unreadable (no `review.toml`, or an invalid manifest or decisions
+file) for 3 polls in a row. (`poll-packet <dir>`, if installed, is the same command.)
 
 ## Clear a revise mark and its note
 
