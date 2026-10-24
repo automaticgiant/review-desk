@@ -195,3 +195,17 @@ def test_link_title_is_escaped():
 def test_txt_like_content_in_code_block_is_not_linked():
     h = md("```\nhttps://example.com/x\n```")
     assert "<a " not in h
+
+
+def test_toolbar_shows_git_sha(monkeypatch):
+    from review_desk import render
+    monkeypatch.setattr(render, "GIT_SHA", "abc1234")
+    assert '<span class="build" title="git commit this desk is running">abc1234</span>' in render._build_tag()
+    monkeypatch.setattr(render, "GIT_SHA", "")
+    assert render._build_tag() == ""
+
+
+def test_git_sha_read_from_repo():
+    from review_desk import render
+    sha = render._git_sha()
+    assert sha == "" or all(c in "0123456789abcdef" for c in sha)

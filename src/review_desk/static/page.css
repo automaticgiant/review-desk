@@ -48,6 +48,7 @@ body.is-offline .card { opacity: 0.55; }
 .share-error { color: var(--drop); font-size: 0.9em; }
 .conn { margin-left: auto; color: var(--muted); font-size: 0.9em; }
 .conn.bad { color: var(--drop); }
+.build { color: var(--muted); font-size: 0.85em; font-family: ui-monospace, monospace; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 10px; min-width: 0; }
 .card[data-decision="approve"] { border-left: 4px solid var(--approve); }
 .card[data-decision="revise"] { border-left: 4px solid var(--revise); }
