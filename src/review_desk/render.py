@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import html
+import os
 import re
+import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -76,6 +78,28 @@ def display_path(path) -> str:
 
 def _links(links: list[Link]) -> str:
     return ", ".join(f'<a href="{e(l.url)}" rel="noopener noreferrer" target="_blank">{e(l.label)}</a>' for l in links)
+
+
+def _git_sha() -> str:
+    """Short sha of the review-desk checkout this code runs from, read once at startup; empty when it isn't one
+    (an installed copy, or a package inside some other repository)."""
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists() or not (root / "bin" / "review-desk").is_file():
+        return ""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5, check=True, env=env).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out if re.fullmatch(r"[0-9a-f]{4,40}", out) else ""
+
+
+GIT_SHA = _git_sha()
+
+
+def _build_tag() -> str:
+    return f'<span class="build" title="git commit this desk is running">{e(GIT_SHA)}</span>' if GIT_SHA else ""
 
 
 def _shell(title: str, body: str, body_attrs: str = "") -> str:
@@ -245,6 +269,7 @@ def _packet_html(pid: str, packet: Packet, drafts: bool, layout: str) -> str:
   <span class="share" id="share" hidden></span>
   <button type="button" id="help-toggle" class="help-toggle" aria-haspopup="dialog" aria-controls="help-dialog" aria-expanded="false">How this works</button>
   <span class="conn" id="conn">Connecting…</span>
+  {_build_tag()}
 </div>
 {HELP_DIALOG}
 <main class="wrap">

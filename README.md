@@ -242,6 +242,10 @@ existing decisions files keep working. Ids that leave the manifest keep their re
    - `revise`: edit the draft per the `note`. The open page swaps the new text in within a few seconds, without a reload. Then clear the mark and note with `PUT {"decision": "", "note": "", "ifDecision": "revise", "ifNote": "<the note you acted on>"}` (see the skill; a 409 means the reviewer decided again or added to the note, so leave it). The desk keeps the old note in `review-history.json` and shows it on the card under "Earlier notes". Say which items changed; they get re-decided;
    - `drop`: don't do it; leave the file;
    - `undecided`: leave it alone; it's still waiting.
+
+   To wait for the reviewer in the same session, run `bin/poll-packet <dir>` as a background command: it is read-only,
+   and exits with `CHANGED` when any decision or note changes (backoff from 15 s to 10 min; `POLL_START`/`POLL_MAX`
+   override), so the agent is re-invoked, then reads `status --json` as above.
 4. Never write `review-decisions.json` yourself. Decisions are the reviewer's. (The desk's PUT API exists for the page.)
 
 ## Install the skill

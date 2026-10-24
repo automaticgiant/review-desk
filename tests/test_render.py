@@ -1,6 +1,7 @@
 """Draft rendering: GitHub-style markdown (CommonMark plus tables and strikethrough), with raw HTML off and a URL
 allowlist on every href and src."""
 import re
+import subprocess
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
@@ -195,3 +196,48 @@ def test_link_title_is_escaped():
 def test_txt_like_content_in_code_block_is_not_linked():
     h = md("```\nhttps://example.com/x\n```")
     assert "<a " not in h
+
+
+def test_toolbar_shows_git_sha(monkeypatch):
+    from review_desk import render
+    monkeypatch.setattr(render, "GIT_SHA", "abc1234")
+    assert '<span class="build" title="git commit this desk is running">abc1234</span>' in render._build_tag()
+    monkeypatch.setattr(render, "GIT_SHA", "")
+    assert render._build_tag() == ""
+
+
+def _stub_git(monkeypatch, result):
+    from review_desk import render
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw))
+        if isinstance(result, BaseException):
+            raise result
+        return subprocess.CompletedProcess(cmd, 0, stdout=result)
+    monkeypatch.setattr(render.subprocess, "run", run)
+    return render, calls
+
+
+def test_git_sha_reads_short_sha_without_inherited_git_env(monkeypatch):
+    monkeypatch.setenv("GIT_DIR", "/elsewhere/.git")
+    render, calls = _stub_git(monkeypatch, "abc1234\n")
+    assert render._git_sha() == "abc1234"
+    cmd, kw = calls[0]
+    assert cmd[:2] == ["git", "-C"] and "GIT_DIR" not in kw["env"]
+
+
+def test_git_sha_empty_on_junk_or_failure(monkeypatch):
+    for result in ("not a sha\n", "", OSError("no git"), subprocess.TimeoutExpired("git", 5)):
+        render, _ = _stub_git(monkeypatch, result)
+        assert render._git_sha() == ""
+
+
+def test_git_sha_empty_when_not_the_checkout(monkeypatch, tmp_path):
+    from review_desk import render
+    pkg = tmp_path / "site-packages" / "review_desk"
+    pkg.mkdir(parents=True)
+    (tmp_path / ".git").mkdir()  # an enclosing repository that is not review-desk
+    monkeypatch.setattr(render, "__file__", str(pkg / "render.py"))
+    _, calls = _stub_git(monkeypatch, "abc1234\n")
+    assert render._git_sha() == "" and calls == []
