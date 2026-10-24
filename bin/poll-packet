@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Wait until a packet's decisions or notes change, then print CHANGED and the new snapshot. Read-only: it only runs
+# `review-desk status --json`. Backoff doubles from POLL_START (default 15s) up to POLL_MAX (default 600s).
+# Exit 0: changed. Exit 2: usage error or `status` failed.
+set -u
+[ $# -eq 1 ] || { echo "usage: poll-packet <packet-dir>" >&2; exit 2; }
+dir=$1; delay=${POLL_START:-15}; max=${POLL_MAX:-600}
+snap() {
+  local out
+  out=$(review-desk status "$dir" --json) || return 1
+  printf '%s' "$out" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+print(json.dumps([(i["id"], i["decision"], i["note"]) for i in d["items"]], sort_keys=True))'
+}
+base=$(snap) || exit 2
+while sleep "$delay"; do
+  cur=$(snap) || exit 2
+  if [ "$cur" != "$base" ]; then echo CHANGED; echo "$cur"; exit 0; fi
+  delay=$(( delay * 2 > max ? max : delay * 2 ))
+done
